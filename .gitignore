@@ -2,8 +2,6 @@
 
 .DS_Store
 
-*.pkl
-
 # Vim/GVim swap files
 *.swp
 *.swo
