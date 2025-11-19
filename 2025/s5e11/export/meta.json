@@ -5,30 +5,17 @@
     "credit_score",
     "loan_amount",
     "interest_rate",
-    "gender",
-    "marital_status",
-    "education_level",
-    "employment_status",
-    "loan_purpose",
+    "is_generated",
     "grade",
-    "subgrade",
     "feat_LTI",
     "feat_monthly_debt",
-    "feat_credit_score_sq",
     "score_x_rate",
-    "rate_to_score_ratio",
     "emp_status_x_score",
     "emp_status_x_rate",
     "estimated_total_interest",
     "score_x_dti"
   ],
-  "categorical_features": [
-    "gender",
-    "marital_status",
-    "grade",
-    "employment_status",
-    "education_level"
-  ],
+  "num_models": 10,
   "target": "loan_paid_back",
   "lightgbm_version": "4.6.0"
 }
