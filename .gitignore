@@ -2,8 +2,6 @@
 
 .DS_Store
 
-*.pkl
-
 # Vim/GVim swap files
 *.swp
 *.swo
@@ -18,6 +16,7 @@ build/
 develop-eggs/
 dist/
 downloads/
+export/
 eggs/
 .eggs/
 lib/
