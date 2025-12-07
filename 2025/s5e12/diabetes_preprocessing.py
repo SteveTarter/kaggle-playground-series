@@ -4,7 +4,8 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.cluster import KMeans
 
 class FeatureFactory(BaseEstimator, TransformerMixin):
     """
@@ -17,6 +18,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'drop_id',
         'ordinal_encoding',
         'medical_metrics',
+        'clinical_indices',
+        'binning',
+        'clustering',
         'interactions',
         'ratios',
         'log',
@@ -24,11 +28,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'one_hot_encoding'
     ]
         
-    def __init__(self, strategies=None, target='diagnosed_diabetes', verbose=False):
+    def __init__(self, strategies=None, seed=10301, target='diagnosed_diabetes', verbose=False):
         if strategies is None:
             strategies = []
         
         self.strategies = []
+        self.seed = seed
         self.target = target
         self.verbose = verbose
                 
@@ -46,8 +51,25 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             raise ValueError(f'Invalid FeatureFactory strategies requested: {invalid_list_str}')
     
     def fit(self, df: pd.DataFrame, y=None):
-        return self
-    
+        if 'clustering' in self.strategies:
+            if self.verbose:
+                print("  -> Fitting K-Means Clustering...")
+            
+            # Select features for clustering (scale them first)
+            # We use a subset of key physiological markers
+            cluster_cols = ['bmi', 'age', 'systolic_bp', 'triglycerides', 'hdl_cholesterol']
+            # Handle missing columns gracefully
+            cluster_cols = [c for c in cluster_cols if c in df.columns]
+            
+            if cluster_cols:
+                self.scaler_ = StandardScaler()
+                self.kmeans_ = KMeans(n_clusters=5, random_state=self.seed, n_init=10)
+                
+                X_cluster = self.scaler_.fit_transform(df[cluster_cols])
+                self.kmeans_.fit(X_cluster)
+                
+        return self  
+        
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
             print(f"Applying FeatureFactory with strategies: {', '.join(self.strategies)}")
@@ -63,6 +85,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'medical_metrics' in self.strategies:
             df_new = self._add_medical_metrics(df_new)
         
+        if 'clinical_indices' in self.strategies:
+            df_new = self._add_clinical_indices(df_new)
+
+        if 'binning' in self.strategies:
+            df_new = self._add_binning(df_new)
+            
         if 'interactions' in self.strategies:
             df_new = self._add_interactions(df_new)
         
@@ -75,6 +103,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'polynomials' in self.strategies:
             df_new = self._add_polynomials(df_new)
         
+        if 'clustering' in self.strategies:
+            df_new = self._add_clustering(df_new)
+            
         if 'one_hot_encoding' in self.strategies:
             df_new = self._add_one_hot_encodings(df_new)
         
@@ -143,6 +174,61 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         return df
     
+    def _add_clinical_indices(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding advanced clinical indices (VAI, LAP proxies)...')
+            
+        # Visceral Adiposity Index (VAI) Proxy
+        # Standard VAI uses Waist Circumference (WC). We use Waist-to-Hip Ratio (WHR) as proxy.
+        # Formula Concept: (Adiposity) * (Lipid Toxicity)
+        # VAI ~ (BMI * WHR) * (Triglycerides / HDL)
+        # Adding epsilon to avoid div/0
+        df['vai_proxy'] = (df['bmi'] * df['waist_to_hip_ratio']) * \
+                          (df['triglycerides'] / (df['hdl_cholesterol'] + 1e-5))
+        
+        # Lipid Accumulation Product (LAP) Proxy
+        # LAP indicates lipid overaccumulation.
+        # Standard: (WC - 65) * TG. We substitute WC with BMI * WHR * constant scaling
+        df['lap_proxy'] = (df['bmi'] * df['waist_to_hip_ratio']) * df['triglycerides']
+        
+        return df
+    
+    def _add_binning(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding medical binning (BMI Class, BP Class)...')
+            
+        # BMI Classes (WHO Standards)
+        # 0: Underweight (<18.5), 1: Normal, 2: Overweight, 3: Obese (>=30)
+        df['bmi_class'] = pd.cut(
+            df['bmi'], 
+            bins=[-1, 18.5, 24.9, 29.9, 100], 
+            labels=[0, 1, 2, 3]
+        ).astype(int)
+        
+        # Blood Pressure Classes (AHA Standards - simplified)
+        # 0: Normal (<120), 1: Elevated, 2: Hypertension Stage 1, 3: Stage 2 (>=140)
+        df['bp_class'] = pd.cut(
+            df['systolic_bp'],
+            bins=[-1, 120, 129, 139, 300],
+            labels=[0, 1, 2, 3]
+        ).astype(int)
+        
+        return df
+
+    def _add_clustering(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding unsupervised clusters...')
+        
+        # We must use the SAME features used in fit()
+        cluster_cols = ['bmi', 'age', 'systolic_bp', 'triglycerides', 'hdl_cholesterol']
+        cluster_cols = [c for c in cluster_cols if c in df.columns]
+        
+        if hasattr(self, 'kmeans_') and cluster_cols:
+            X_cluster = self.scaler_.transform(df[cluster_cols])
+            df['cluster_label'] = self.kmeans_.predict(X_cluster)
+        
+        return df
+        
     def _add_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
         # Adds interaction terms between features
         if self.verbose:
