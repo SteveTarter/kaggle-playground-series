@@ -4,7 +4,7 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import RobustScaler
 from sklearn.cluster import KMeans
 
 class FeatureFactory(BaseEstimator, TransformerMixin):
@@ -62,8 +62,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             cluster_cols = [c for c in cluster_cols if c in df.columns]
             
             if cluster_cols:
-                self.scaler_ = StandardScaler()
-                self.kmeans_ = KMeans(n_clusters=5, random_state=self.seed, n_init=10)
+                self.scaler_ = RobustScaler()
+                self.kmeans_ = KMeans(n_clusters=7, random_state=self.seed, n_init=10)
                 
                 X_cluster = self.scaler_.fit_transform(df[cluster_cols])
                 self.kmeans_.fit(X_cluster)
@@ -118,9 +118,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Dropping the 'id' column
         if self.verbose:
             print("  -> Dropping the 'id' column...")
-        
-        df = df.drop('id', axis=1)
-        
+
+        if 'id' in df.columns:
+            df = df.drop('id', axis=1)
+
+        if self.target in df.columns:
+            df = df.drop(self.target, axis=1)
+            
         return df
         
     def _add_ordinal_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
