@@ -15,69 +15,66 @@ class ModelVisualizer:
 
     def plot_learning_curves(self, eval_results, metric='auc'):
         """
-        Plots Train vs Val metrics over iterations for multiple folds.
-        Expects eval_results from XGBoost/LightGBM (validation_0, validation_1)
-        or CatBoost (learn, validation_0).
+        Plots Train vs Val metrics over iterations.
+        Handles case sensitivity ('AUC' vs 'auc') and missing training metrics.
         """
         plt.figure(figsize=(10, 6))
         
         for i, result in enumerate(eval_results):
-            # Detect Keys dynamically based on Model Type
             keys = list(result.keys())
-            
-            # Defaults
             train_key, val_key = None, None
-
-            if self.model_name == 'CatBoost':
+            
+            # Auto-Detect Keys
+            if 'learn' in keys: # CatBoost
                 train_key = 'learn'
-                # CatBoost val key often 'validation_0' or 'validation'
-                val_key = 'validation_0' if 'validation_0' in keys else keys[-1]
-                
-            elif self.model_name == 'LightGBM':
-                # LightGBM usually uses 'training' and 'valid_1'
-                train_key = 'training' if 'training' in keys else keys[0]
+                # Find the validation key (usually validation_0 or validation_1)
+                val_keys = [k for k in keys if 'validation' in k]
+                val_key = val_keys[-1] if val_keys else None
+            elif 'training' in keys: # LightGBM
+                train_key = 'training'
                 val_key = 'valid_1' if 'valid_1' in keys else keys[-1]
-                
-            else: # XGBoost default
+            elif 'validation_0' in keys: # XGBoost
                 train_key = 'validation_0'
                 val_key = 'validation_1'
-
-            # Safety Check
-            if train_key not in result or val_key not in result:
-                print(f"Warning: Could not find keys '{train_key}' or '{val_key}' in fold {i+1}. Found: {keys}")
+            
+            if not train_key or not val_key:
+                print(f"Fold {i+1}: Could not detect standard keys. Found: {keys}")
                 continue
 
-            # Extract Metrics
-            # LightGBM/XGBoost dicts often have the metric name nested, e.g. {'auc': [...]}
-            # CatBoost often has it directly or nested depending on API version.
-            try:
-                # Handle nested dictionary case (Standard XGB/LGBM)
-                if isinstance(result[train_key], dict):
-                    train_metric = result[train_key][metric]
-                    val_metric = result[val_key][metric]
-                else:
-                    # Handle flat case (Some CatBoost versions)
-                    train_metric = result[train_key]
-                    val_metric = result[val_key]
-            except KeyError:
-                print(f"Error: Metric '{metric}' not found in keys. Available metrics: {result[train_key].keys()}")
-                return
+            # Extract Metrics (Robust)
+            # Try lowercase ('auc'), uppercase ('AUC'), and title case ('Auc')
+            candidates = [metric, metric.upper(), metric.capitalize()]
+            
+            # Helper to safely get metric
+            def get_data(source_dict, candidates):
+                for c in candidates:
+                    if c in source_dict:
+                        return source_dict[c]
+                return None
 
-            # Plot
-            lbl_train = 'Train' if i == 0 else None
+            # Get Data
+            train_data = get_data(result[train_key], candidates)
+            val_data = get_data(result[val_key], candidates)
+
+            # Plotting
             lbl_val = 'Val' if i == 0 else None
             
-            plt.plot(train_metric, color='blue', alpha=0.3, label=lbl_train)
-            plt.plot(val_metric, color='red', alpha=0.6, linewidth=1.5, label=lbl_val)
+            # If train metric is missing (common in CatBoost), just plot validation
+            if train_data is None:
+                if i == 0: print(f"Note: '{metric}' not found in Training log. Plotting Validation only.")
+                plt.plot(val_data, color='red', alpha=0.6, linewidth=1.5, label=lbl_val)
+            else:
+                lbl_train = 'Train' if i == 0 else None
+                plt.plot(train_data, color='blue', alpha=0.3, label=lbl_train)
+                plt.plot(val_data, color='red', alpha=0.6, linewidth=1.5, label=lbl_val)
 
         plt.title(f'{self.model_name} Learning Curves ({metric.upper()})')
         plt.xlabel('Iterations')
         plt.ylabel(metric.upper())
         plt.legend()
-        plt.tight_layout()
         plt.show()
 
-    
+
     def plot_feature_importance(self, models, top_n=30, show_values=True):
         """
         Aggregates and plots feature importance across multiple trained models.
@@ -89,16 +86,35 @@ class ModelVisualizer:
         feature_importance = pd.DataFrame()
         
         for i, model in enumerate(models):
-            # XGBoost specific: get_score(importance_type='gain')
-            # If using CatBoost, change to: model.get_feature_importance()
+            imp_dict = {}
+            
+            # Auto-Detect Importance Type
             try:
-                imp_dict = model.get_booster().get_score(importance_type='gain')
-            except AttributeError:
-                # Fallback for Sklearn API wrapper consistency or other models
-                if hasattr(model, 'feature_importances_'):
-                    imp_dict = dict(zip(model.feature_names_in_, model.feature_importances_))
-                else:
-                    continue
+                # CatBoost
+                if hasattr(model, 'get_feature_importance'):
+                    imp = model.get_feature_importance()
+                    names = model.feature_names_
+                    imp_dict = dict(zip(names, imp))
+                
+                # LightGBM
+                elif hasattr(model, 'feature_importances_') and hasattr(model, 'feature_name_'):
+                    imp = model.feature_importances_
+                    names = model.feature_name_
+                    imp_dict = dict(zip(names, imp))
+                
+                # XGBoost (Booster object)
+                elif hasattr(model, 'get_booster'):
+                    imp_dict = model.get_booster().get_score(importance_type='gain')
+                
+                # Sklearn generic
+                elif hasattr(model, 'feature_importances_'):
+                     # Try to get names, otherwise use indices
+                    names = getattr(model, 'feature_names_in_', [f'f{x}' for x in range(len(model.feature_importances_))])
+                    imp_dict = dict(zip(names, model.feature_importances_))
+
+            except Exception as e:
+                print(f"Error extracting importance for model {i}: {e}")
+                continue
 
             fold_imp = pd.DataFrame({
                 'Feature': list(imp_dict.keys()),
@@ -107,22 +123,17 @@ class ModelVisualizer:
             })
             feature_importance = pd.concat([feature_importance, fold_imp], axis=0)
 
-        # Aggregation
+        if feature_importance.empty: return
+
         avg_imp = feature_importance.groupby('Feature')['Importance'].mean().sort_values(ascending=False).head(top_n)
 
         plt.figure(figsize=(10, 12))
-        ax = sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
-
-        if show_values:
-            for i in range(top_n):
-                ax.bar_label(ax.containers[i])
-
-        plt.title(f'{self.model_name} Top {top_n} Feature Importances (Avg Gain)')
-        plt.xlabel('Gain')
-        plt.tight_layout()
+        sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
+        plt.title(f'{self.model_name} Top {top_n} Feature Importances (Average)')
+        plt.xlabel('Importance')
         plt.show()
 
-    
+
     def plot_roc_curve(self, y_true, y_preds):
         """
         Plots the ROC curve for Out-of-Fold predictions.
