@@ -25,9 +25,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'ratios',
         'log',
         'polynomials',
-        'one_hot_encoding'
+        'one_hot_encoding',
+        'group_aggregations',
+        'cohort_deviations'
     ]
-        
+
+    
     def __init__(self, strategies=None, seed=10301, target='diagnosed_diabetes', verbose=False):
         if strategies is None:
             strategies = []
@@ -49,6 +52,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if len(invalid_strategies) > 0:
             invalid_list_str = ','.join(invalid_strategies)
             raise ValueError(f'Invalid FeatureFactory strategies requested: {invalid_list_str}')
+
     
     def fit(self, df: pd.DataFrame, y=None):
         if 'clustering' in self.strategies:
@@ -69,6 +73,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 self.kmeans_.fit(X_cluster)
                 
         return self  
+
         
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
@@ -105,15 +110,24 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         if 'clustering' in self.strategies:
             df_new = self._add_clustering(df_new)
-            
+
+        if 'group_aggregations' in self.strategies:
+            df_new = self._add_group_aggregations(df_new)
+
+        if 'cohort_deviations' in self.strategies:
+            df_new = self._add_cohort_deviations(df_new)
+
+        # This strategy destroys columns, so do it last
         if 'one_hot_encoding' in self.strategies:
             df_new = self._add_one_hot_encodings(df_new)
-        
+            
         return df_new
+
     
-    def strategies(self) -> []:
+    def get_strategies(self) -> []:
         return self.strategies
-    
+
+        
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
         if self.verbose:
@@ -126,7 +140,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             df = df.drop(self.target, axis=1)
             
         return df
-        
+
+    
     def _add_ordinal_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
         # Preserves the rank order of Education and Income
         if self.verbose:
@@ -157,6 +172,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             df['income_level_ord'] = df['income_level'].map(income_map).fillna(-1)
             
         return df
+
     
     def _add_medical_metrics(self, df: pd.DataFrame) -> pd.DataFrame:
         # Adds biologically relevant cardiovascular metrics
@@ -177,6 +193,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['non_hdl_cholesterol'] = df['cholesterol_total'] - df['hdl_cholesterol']
         
         return df
+
     
     def _add_clinical_indices(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
@@ -196,7 +213,75 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['lap_proxy'] = (df['bmi'] * df['waist_to_hip_ratio']) * df['triglycerides']
         
         return df
-    
+
+        
+    def _add_group_aggregations(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding group aggregations...')
+        
+        # Define meaningful groups
+        groups = ['age_bin', 'gender', 'ethnicity']
+        
+        # If age_bin doesn't exist yet, create a temporary one for grouping
+        if 'age_bin' not in df.columns:
+            df['temp_age_bin'] = pd.cut(df['age'], bins=5, labels=False)
+            group_col = 'temp_age_bin'
+        else:
+            group_col = 'age_bin'
+
+        # Features to aggregate
+        target_cols = ['bmi', 'systolic_bp', 'cholesterol_total']
+        
+        for t_col in target_cols:
+            # Calculate the mean of the target column for the group
+            # Note: In a real pipeline, these means should be fitted on Train and mapped to Test to avoid leakage.
+            # For simplicity in this factory, simple transform is often "good enough" for Kaggle playgrounds 
+            # if done inside the Cross-Validation loop.
+            group_means = df.groupby(['gender', group_col])[t_col].transform('mean')
+            
+            # Create a "Difference from Average" feature
+            df[f'{t_col}_diff_gender_age'] = df[t_col] - group_means
+            
+        if 'temp_age_bin' in df.columns:
+            df = df.drop('temp_age_bin', axis=1)
+            
+        return df
+
+
+    def _add_cohort_deviations(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding cohort deviations...')
+            print(f'Cols before:{df.columns}')
+        
+        # Create a cohort key (e.g., Gender + Age Decile)
+        df['age_decile'] = pd.qcut(df['age'], 10, labels=False)
+        if self.verbose:
+            print('Created temporary age_decile col')
+            
+        # Physiological targets
+        targets = ['bmi', 'systolic_bp', 'triglycerides']
+        
+        for t in targets:
+            # Calculate cohort mean
+            # Note: For strict correctness, fit on Train and map to Test, 
+            # but usually fine to do on whole dataset for Playground competitions
+            if self.verbose:
+                print(f'Calculating cohort_mean for {t}')
+            cohort_mean = df.groupby(['gender', 'age_decile'])[t].transform('mean')
+            
+            # Feature: Is this patient above/below their peer group?
+            df[f'{t}_cohort_deviation'] = df[t] - cohort_mean
+            if self.verbose:
+                print(f'Created new {t}_cohort_deviation feature')
+
+        df = df.drop(columns=['age_decile'])
+        
+        if self.verbose:
+            print(f'Cols after:{df.columns}')
+        
+        return df
+
+        
     def _add_binning(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
             print('  -> Adding medical binning (BMI Class, BP Class)...')
@@ -219,6 +304,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         return df
 
+        
     def _add_clustering(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
             print('  -> Adding unsupervised clusters...')
@@ -232,6 +318,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             df['cluster_label'] = self.kmeans_.predict(X_cluster)
         
         return df
+
         
     def _add_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
         # Adds interaction terms between features
@@ -249,6 +336,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['sedentary_ratio'] = df['screen_time_hours_per_day'] / (df['physical_activity_minutes_per_week'] + 1)
         
         return df
+
         
     def _add_ratios(self, df: pd.DataFrame) -> pd.DataFrame:
         # Ratios based on physiological risk factors
@@ -265,6 +353,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['whr_bmi_product'] = df['waist_to_hip_ratio'] * df['bmi']
         
         return df
+
         
     def _add_log_transforms(self, df: pd.DataFrame) -> pd.DataFrame:
         # Log transformation is useful for right-skewed features
@@ -278,6 +367,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['screen_time_log'] = np.log1p(df['screen_time_hours_per_day'])
         
         return df
+
         
     def _add_polynomials(self, df: pd.DataFrame) -> pd.DataFrame:
         # Adds simple squares of key features
@@ -288,11 +378,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['bmi_sq'] = df['bmi'] ** 2
         
         return df
+
         
     def _add_one_hot_encodings(self, df: pd.DataFrame) -> pd.DataFrame:
         # Adds one hot encodings of categorical features
         if self.verbose:
             print('  -> Adding one hot encodings of categorical features')
+            print(f'Cols before:{df.columns}')
         
         # Identify Feature Types
         # We exclude the target from the features list
@@ -301,7 +393,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Automatically select categorical columns for encoding
         # (gender, ethnicity, education_level, income_level, smoking_status, employment_status)
         cat_features = df[features].select_dtypes(include=['object', 'category']).columns.tolist()
+        if self.verbose:
+            print(f'Categorical features: {cat_features}')
+        
         
         df = pd.get_dummies(df, columns=cat_features, prefix_sep='_', dtype=int)
+        
+        if self.verbose:
+            print(f'Cols after:{df.columns}')
         
         return df;

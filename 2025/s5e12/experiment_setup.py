@@ -45,7 +45,7 @@ class ExperimentSetup:
         
         return self.seed
 
-    def get_seed() -> int:
+    def get_seed(self) -> int:
         return self.seed
 
         
@@ -75,12 +75,12 @@ class ExperimentSetup:
     def read_test_dataset(self) -> pd.DataFrame:
         data_dir = Path('/kaggle/input/playground-series-s5e12') if self.running_in_kaggle() else Path('data')
 
-        training_df = pd.read_csv(data_dir / 'test.csv')
+        test_df = pd.read_csv(data_dir / 'test.csv')
         print('TEST DATASET')
         print('============\n')
-        print(training_df.head(5))
+        print(test_df.head(5))
 
-        return training_df
+        return test_df
 
 
     def read_sample_submission_dataset(self) -> pd.DataFrame:
