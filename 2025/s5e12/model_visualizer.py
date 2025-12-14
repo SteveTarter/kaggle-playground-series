@@ -32,10 +32,10 @@ class ModelVisualizer:
                 val_key = val_keys[-1] if val_keys else None
             elif 'training' in keys: # LightGBM
                 train_key = 'training'
-                val_key = 'valid_1' if 'valid_1' in keys else keys[-1]
+                val_key = 'valid_0' if 'valid_0' in keys else keys[-1]
             elif 'validation_0' in keys: # XGBoost
-                train_key = 'validation_0'
-                val_key = 'validation_1'
+                train_key = 'validation_1'
+                val_key = 'validation_0'
             
             if not train_key or not val_key:
                 print(f"Fold {i+1}: Could not detect standard keys. Found: {keys}")
