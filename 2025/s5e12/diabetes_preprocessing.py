@@ -1,4 +1,5 @@
 # %% [code]
+from __future__ import annotations
 import os
 import sys
 import numpy as np
@@ -6,6 +7,15 @@ import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import RobustScaler
 from sklearn.cluster import KMeans
+
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Sequence, Tuple
+
+@dataclass
+class _AggSpec:
+    group_cols: Tuple[str, ...]
+    value_cols: Tuple[str, ...]
+    prefix: str
 
 class FeatureFactory(BaseEstimator, TransformerMixin):
     """
@@ -31,7 +41,21 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     ]
 
     
-    def __init__(self, strategies=None, seed=10301, target='diagnosed_diabetes', verbose=False):
+    def __init__(
+        self, 
+        *,
+        strategies=None,
+        seed=10301,
+        target='diagnosed_diabetes',
+        verbose=False,
+        groupby_cols: Sequence[str] = ('gender',),
+        group_agg_cols: Sequence[str] = ('bmi', 'blood_glucose', 'hbA1c_level'),
+        cohort_target_cols: Sequence[str] = ('bmi', 'blood_glucose', 'hbA1c_level'),
+        age_bins: int = 10,
+        age_bin_strategy: str = 'quantile',  # 'quantile' or 'fixed'
+        fixed_age_edges: Optional[Sequence[float]] = None,
+        
+    ):
         if strategies is None:
             strategies = []
         
@@ -39,7 +63,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         self.seed = seed
         self.target = target
         self.verbose = verbose
-                
+
         invalid_strategies = set()
         
         # Validate and store only the requested strategies
@@ -52,30 +76,121 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if len(invalid_strategies) > 0:
             invalid_list_str = ','.join(invalid_strategies)
             raise ValueError(f'Invalid FeatureFactory strategies requested: {invalid_list_str}')
+            
+        self.groupby_cols = tuple(groupby_cols)
+        self.group_agg_cols = tuple(group_agg_cols)
+        self.cohort_target_cols = tuple(cohort_target_cols)
 
-    
-    def fit(self, df: pd.DataFrame, y=None):
-        if 'clustering' in self.strategies:
+        self.age_bins = int(age_bins)
+        self.age_bin_strategy = age_bin_strategy
+        self.fixed_age_edges = list(fixed_age_edges) if fixed_age_edges is not None else None
+        
+        # Select features for clustering (scale them first)
+        # We use a subset of key physiological markers
+        self.cluster_cols = ['bmi', 'age', 'systolic_bp', 'triglycerides', 'hdl_cholesterol']
+
+        # Learned state (set in fit)
+        self._is_fit: bool = False
+        self._train_global_means: Dict[str, float] = {}
+        self._group_means_map: Optional[pd.DataFrame] = None     # indexed by group keys
+        self._cohort_means_map: Optional[pd.DataFrame] = None    # indexed by (gender, age_decile)
+        self._age_edges: Optional[np.ndarray] = None
+        self._scaler: Optional[RobustScaler] = None
+        self._kmeans: Optional[RobustScaler] = None
+
+    def fit(self, df: pd.DataFrame = None) -> 'FeatureFactory':
+        df = df.copy()
+
+        # Train-global backoffs (used when unseen groups/cohorts appear)
+        for c in set(self.group_agg_cols).union(self.cohort_target_cols):
+            if c in df.columns:
+                self._train_global_means[c] = float(pd.to_numeric(df[c], errors='coerce').mean())
+
+        # Fit age bins (stable across folds)
+        if 'age' in df.columns and ('cohort_deviations' in self.strategies):
+            if self.verbose:
+                print("  -> Fitting Age Cohort Deviations...")
+
+            age = pd.to_numeric(df['age'], errors='coerce')
+
+            if self.age_bin_strategy == 'fixed':
+                if not self.fixed_age_edges:
+                    raise ValueError('fixed_age_edges must be provided when age_bin_strategy="fixed"')
+                edges = np.asarray(self.fixed_age_edges, dtype=float)
+            else:
+                # Quantile edges learned from TRAIN only and stored.
+                # Use duplicates='drop' logic by jittering slightly if needed.
+                qs = np.linspace(0.0, 1.0, self.age_bins + 1)
+                edges = np.nanquantile(age.to_numpy(), qs)
+
+                # Ensure strictly increasing edges; if not, fall back to pd.qcut codes with duplicates='drop'
+                # by making edges unique and monotonic.
+                edges = np.unique(edges)
+                if len(edges) < 2:
+                    # degenerate; fall back to a simple min/max
+                    mn, mx = np.nanmin(age.to_numpy()), np.nanmax(age.to_numpy())
+                    edges = np.array([mn, mx], dtype=float)
+
+            # Expand outer edges a bit so cut includes min/max
+            edges[0] = edges[0] - 1e-9    
+            edges[-1] = edges[-1] + 1e-9
+            self._age_edges = edges
+
+        # Fit group aggregations (TRAIN only)
+        if 'group_aggregations' in self.strategies and self.groupby_cols:
+            if self.verbose:
+                print("  -> Fitting Group Aggregations...")
+
+            # Compute means for each group key for requested columns
+            cols = [c for c in self.group_agg_cols if c in df.columns]
+            if cols:
+                g = (
+                    df.loc[:, list(self.groupby_cols) + cols]
+                    .assign(**{c: pd.to_numeric(df[c], errors='coerce') for c in cols})
+                    .groupby(list(self.groupby_cols), dropna=False)[cols]
+                    .mean()
+                )
+                # DataFrame indexed by group keys, columns are mean values
+                self._group_means_map = g
+
+        # Fit cohort means (TRAIN only): (gender, age_decile) -> mean(target_cols)
+        if 'cohort_deviations' in self.strategies and ('gender' in df.columns) and ('age' in df.columns):
+            if self.verbose:
+                print("  -> Fitting Gender Cohort Deviations...")
+
+            df_tmp = df.copy()
+            df_tmp['age_decile'] = self._age_to_bin_codes(df_tmp['age'])
+
+            cols = [c for c in self.cohort_target_cols if c in df_tmp.columns]
+            if cols:
+                cmeans = (
+                    df_tmp.loc[:, ['gender', 'age_decile'] + cols]
+                    .assign(**{c: pd.to_numeric(df_tmp[c], errors='coerce') for c in cols})
+                    .groupby(['gender', 'age_decile'], dropna=False)[cols]
+                    .mean()
+                )
+                self._cohort_means_map = cmeans
+
+        # Fit clustering using KMeans (TRAIN only)
+        # Handle missing columns gracefully
+        cluster_cols = [c for c in self.cluster_cols if c in df.columns]
+        if 'clustering' in self.strategies and cluster_cols:
             if self.verbose:
                 print("  -> Fitting K-Means Clustering...")
-            
-            # Select features for clustering (scale them first)
-            # We use a subset of key physiological markers
-            cluster_cols = ['bmi', 'age', 'systolic_bp', 'triglycerides', 'hdl_cholesterol']
-            # Handle missing columns gracefully
-            cluster_cols = [c for c in cluster_cols if c in df.columns]
-            
-            if cluster_cols:
-                self.scaler_ = RobustScaler()
-                self.kmeans_ = KMeans(n_clusters=7, random_state=self.seed, n_init=10)
-                
-                X_cluster = self.scaler_.fit_transform(df[cluster_cols])
-                self.kmeans_.fit(X_cluster)
-                
-        return self  
 
-        
+            self._scaler = RobustScaler()
+            self._kmeans = KMeans(n_clusters=7, random_state=self.seed, n_init=10)
+                
+            X_cluster = self._scaler.fit_transform(df[cluster_cols])
+            self._kmeans.fit(X_cluster)
+
+        self._is_fit = True
+        return self
+
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not self._is_fit:
+            raise RuntimeError('FeatureFactory must be fit() before transform().')
+
         if self.verbose:
             print(f"Applying FeatureFactory with strategies: {', '.join(self.strategies)}")
         
@@ -127,6 +242,21 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     def get_strategies(self) -> []:
         return self.strategies
 
+    # -------------------------
+    # Internals
+    # -------------------------
+
+    def _age_to_bin_codes(self, age_series: pd.Series) -> pd.Series:
+        """
+        Convert age -> stable bin code using fitted edges.
+        """
+        if self._age_edges is None:
+            raise RuntimeError('Age bin edges not fit. Call fit() first or disable cohort_deviations.')
+
+        age = pd.to_numeric(age_series, errors='coerce')
+        # pd.cut returns categorical; labels=False yields integer codes [0..n-1]
+        codes = pd.cut(age, bins=self._age_edges, labels=False, include_lowest=True)
+        return codes.astype('Int64')  # nullable integer
         
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
@@ -216,71 +346,78 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         
     def _add_group_aggregations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Adds {col}_mean_by_{group} and {col}_dev_from_{group} using TRAIN-fitted group means.
+        Does NOT recompute means on df.
+        """
         if self.verbose:
             print('  -> Adding group aggregations...')
         
-        # Define meaningful groups
-        groups = ['age_bin', 'gender', 'ethnicity']
-        
-        # If age_bin doesn't exist yet, create a temporary one for grouping
-        if 'age_bin' not in df.columns:
-            df['temp_age_bin'] = pd.cut(df['age'], bins=5, labels=False)
-            group_col = 'temp_age_bin'
-        else:
-            group_col = 'age_bin'
+        if self._group_means_map is None:
+            return df
 
-        # Features to aggregate
-        target_cols = ['bmi', 'systolic_bp', 'cholesterol_total']
-        
-        for t_col in target_cols:
-            # Calculate the mean of the target column for the group
-            # Note: In a real pipeline, these means should be fitted on Train and mapped to Test to avoid leakage.
-            # For simplicity in this factory, simple transform is often "good enough" for Kaggle playgrounds 
-            # if done inside the Cross-Validation loop.
-            group_means = df.groupby(['gender', group_col])[t_col].transform('mean')
-            
-            # Create a "Difference from Average" feature
-            df[f'{t_col}_diff_gender_age'] = df[t_col] - group_means
-            
-        if 'temp_age_bin' in df.columns:
-            df = df.drop('temp_age_bin', axis=1)
-            
+        cols = [c for c in self.group_agg_cols if c in df.columns]
+        if not cols:
+            return df
+
+        # Merge group means onto df
+        # _group_means_map is indexed by group keys; reset_index() to merge.
+        means_df = self._group_means_map.reset_index()
+        means_df = means_df.rename(columns={c: f'{c}_mean_by_group' for c in cols})
+
+        # If transform() might be called multiple times on same df,
+        # drop existing mean columns to avoid _x/_y suffixes.
+        mean_cols = [f'{c}_mean_by_group' for c in cols]
+        df = df.drop(columns=[c for c in mean_cols if c in df.columns], errors='ignore')
+
+        df = df.merge(means_df, on=list(self.groupby_cols), how='left')
+
+        for c in cols:
+            mcol = f'{c}_mean_by_group'
+            backoff = self._train_global_means.get(c, np.nan)
+            df[mcol] = df[mcol].fillna(backoff)
+            df[f'{c}_dev_from_group'] = pd.to_numeric(df[c], errors='coerce') - df[mcol]
+
         return df
 
-
     def _add_cohort_deviations(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Adds stable age_decile + {col}_cohort_mean + {col}_dev_from_cohort
+        where cohort is (gender, age_decile) and means are TRAIN-fitted.
+        Does NOT recompute cohort means on df.
+        """
+        if self._cohort_means_map is None:
+            return df
+
+        if 'gender' not in df.columns or 'age' not in df.columns:
+            return df
+            
         if self.verbose:
             print('  -> Adding cohort deviations...')
             print(f'Cols before:{df.columns}')
-        
-        # Create a cohort key (e.g., Gender + Age Decile)
-        df['age_decile'] = pd.qcut(df['age'], 10, labels=False)
-        if self.verbose:
-            print('Created temporary age_decile col')
-            
-        # Physiological targets
-        targets = ['bmi', 'systolic_bp', 'triglycerides']
-        
-        for t in targets:
-            # Calculate cohort mean
-            # Note: For strict correctness, fit on Train and map to Test, 
-            # but usually fine to do on whole dataset for Playground competitions
-            if self.verbose:
-                print(f'Calculating cohort_mean for {t}')
-            cohort_mean = df.groupby(['gender', 'age_decile'])[t].transform('mean')
-            
-            # Feature: Is this patient above/below their peer group?
-            df[f'{t}_cohort_deviation'] = df[t] - cohort_mean
-            if self.verbose:
-                print(f'Created new {t}_cohort_deviation feature')
 
-        df = df.drop(columns=['age_decile'])
-        
+        cols = [c for c in self.cohort_target_cols if c in df.columns]
+        if not cols:
+            return df
+
+        df = df.copy()
+        df['age_decile'] = self._age_to_bin_codes(df['age'])
+
+        cohort_df = self._cohort_means_map.reset_index()
+        cohort_df = cohort_df.rename(columns={c: f'{c}_cohort_mean' for c in cols})
+
+        df = df.merge(cohort_df, on=['gender', 'age_decile'], how='left')
+
+        for c in cols:
+            mcol = f'{c}_cohort_mean'
+            backoff = self._train_global_means.get(c, np.nan)
+            df[mcol] = df[mcol].fillna(backoff)
+            df[f'{c}_dev_from_cohort'] = pd.to_numeric(df[c], errors='coerce') - df[mcol]
+
         if self.verbose:
             print(f'Cols after:{df.columns}')
         
         return df
-
         
     def _add_binning(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
@@ -310,12 +447,11 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print('  -> Adding unsupervised clusters...')
         
         # We must use the SAME features used in fit()
-        cluster_cols = ['bmi', 'age', 'systolic_bp', 'triglycerides', 'hdl_cholesterol']
-        cluster_cols = [c for c in cluster_cols if c in df.columns]
+        cluster_cols = [c for c in self.cluster_cols if c in df.columns]
         
-        if hasattr(self, 'kmeans_') and cluster_cols:
-            X_cluster = self.scaler_.transform(df[cluster_cols])
-            df['cluster_label'] = self.kmeans_.predict(X_cluster)
+        if hasattr(self, '_kmeans') and cluster_cols:
+            df_cluster = self._scaler.transform(df[cluster_cols])
+            df['cluster_label'] = self._kmeans.predict(df_cluster)
         
         return df
 

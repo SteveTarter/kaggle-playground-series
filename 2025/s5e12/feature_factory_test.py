@@ -7,6 +7,8 @@ from diabetes_preprocessing import FeatureFactory
 sys.path.append('.')
 
 seed = 10301
+TARGET = 'diagnosed_diabetes'
+
 # In a notebook, this variable is usually global. 
 # We inject it into the builtins so the class can find it if it's not passed in __init__
 import builtins
@@ -37,7 +39,7 @@ test_data = {
     'diagnosed_diabetes':                 [1, 0, 0, 0, 1, 0, 1] 
 }
 df_test = pd.DataFrame(test_data)
-df_test = pd.DataFrame(test_data)
+y = df_test[TARGET]
 
 print(f"Test Data Shape: {df_test.shape}")
 print("Original Columns:", df_test.columns.tolist())
@@ -46,8 +48,8 @@ print("Original Columns:", df_test.columns.tolist())
 # Test Case A: Numeric Features (Ratios, Log, Polynomials)
 # ---------------------------------------------------------
 print("\n--- Test A: Ratios, Log, Polynomials ---")
-ff_numeric = FeatureFactory(strategies=['ratios', 'log', 'polynomials'])
-df_numeric_result = ff_numeric.transform(df_test)
+ff_numeric = FeatureFactory(strategies=['ratios', 'log', 'polynomials'], verbose=False)
+df_numeric_result = ff_numeric.fit_transform(df_test)
 
 new_cols_a = [c for c in df_numeric_result.columns if c not in df_test.columns]
 
@@ -68,7 +70,7 @@ else:
 # ---------------------------------------------------------
 print("\n--- Test B: One Hot Encoding ---")
 ff_ohe = FeatureFactory(strategies=['one_hot_encoding'])
-df_ohe_result = ff_ohe.transform(df_test)
+df_ohe_result = ff_ohe.fit_transform(df_test)
 
 # Check if 'gender' was converted
 if 'gender_Male' in df_ohe_result.columns:
@@ -118,18 +120,17 @@ else:
 # ---------------------------------------------------------
 print("\n--- Test F: Unsupervised Clustering ---")
 # Clustering requires the 'fit' method to initialize KMeans
-ff_cluster = FeatureFactory(strategies=['clustering'], verbose=True)
+ff_cluster = FeatureFactory(strategies=['clustering'], verbose=False)
 
 # We simulate a train/test split scenario
 # Fit on df_test, Transform df_test
-ff_cluster.fit(df_test)
-df_cluster = ff_cluster.transform(df_test)
+df_cluster = ff_cluster.fit_transform(df_test)
 
 if 'cluster_label' in df_cluster.columns:
     print("SUCCESS: Cluster labels created.")
     print(f"Labels: {df_cluster['cluster_label'].values}")
 else:
-    print("FAILURE: Cluster label missing.")
+    print(f"FAILURE: Cluster label missing. Columns found: {df_cluster.columns.tolist()}")
 
 
 # ---------------------------------------------------------
@@ -144,22 +145,22 @@ if 'education_level_ord' in df_ordinal.columns:
     # 'Highschool' should be mapped to 2
     print(f"Mapped Education: {df_ordinal['education_level_ord'].values}")
 else:
-    print("FAILURE: Ordinal columns missing.")
+    print("FAILURE: Ordinal columns missing. Columns found: {df_ordinal.columns.tolist()}")
 
 
 # ---------------------------------------------------------
 # Test I: Group Aggregations
 # ---------------------------------------------------------
 print("\n--- Test I: Group Aggregations ---")
-ff_group = FeatureFactory(strategies=['group_aggregations'])
+ff_group = FeatureFactory(strategies=['group_aggregations'], verbose=False)
 
 # We need to handle potential pandas fragmentation warnings or settings 
 # that might arise from multiple transforms in a loop, but here it's fine.
-df_group = ff_group.transform(df_test)
+df_group = ff_group.fit_transform(df_test)
 
 # Check for a specific aggregated column
 # The code creates {target}_diff_gender_age
-expected_col = 'bmi_diff_gender_age'
+expected_col = 'bmi_mean_by_group'
 
 if expected_col in df_group.columns:
     print(f"SUCCESS: Group aggregation column '{expected_col}' created.")
@@ -177,17 +178,17 @@ print("\n--- Test J: Cohort Deviations ---")
 ff_cohort = FeatureFactory(strategies=['cohort_deviations'], verbose=False)
 
 try:
-    df_cohort = ff_cohort.transform(df_test)
+    df_cohort = ff_cohort.fit_transform(df_test)
     
     # The code calculates deviation from age decile/gender group
     # Columns like {target}_cohort_deviation
-    dev_col = 'bmi_cohort_deviation'
+    dev_col = 'bmi_dev_from_cohort'
 
     if dev_col in df_cohort.columns:
         print(f"SUCCESS: Cohort deviation column '{dev_col}' created.")
         print(f"Sample Deviation: {df_cohort[dev_col].values[:3]}")
     else:
-        print(f"FAILURE: Cohort deviation column missing.")
+        print(f"FAILURE: Cohort deviation column missing. Columns found: {df_cohort.columns.tolist()}")
         
 except Exception as e:
     print(f"FAILURE: Cohort deviation transform crashed: {e}")
@@ -206,7 +207,7 @@ ff_full = FeatureFactory(strategies=all_strategies, verbose=False)
 
 try:
     # Fit and Transform
-    df_full = ff_full.fit(df_test).transform(df_test)
+    df_full = ff_full.fit_transform(df_test)
 
     print(f"Final Shape: {df_full.shape}")
     
