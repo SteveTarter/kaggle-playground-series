@@ -45,6 +45,7 @@ class ExperimentSetup:
         
         return self.seed
 
+    
     def get_seed(self) -> int:
         return self.seed
 
@@ -61,6 +62,7 @@ class ExperimentSetup:
         warnings.filterwarnings('ignore', message='.*Falling back to prediction using DMatrix.*')
         print("Warnings suppressed.")
 
+    
     def read_training_dataset(self) -> pd.DataFrame:
         data_dir = Path('/kaggle/input/playground-series-s6e1') if self.running_in_kaggle() else Path('data')
 
@@ -71,7 +73,7 @@ class ExperimentSetup:
 
         return training_df
 
-
+    
     def read_test_dataset(self) -> pd.DataFrame:
         data_dir = Path('/kaggle/input/playground-series-s6e1') if self.running_in_kaggle() else Path('data')
 
@@ -81,6 +83,17 @@ class ExperimentSetup:
         print(test_df.head(5))
 
         return test_df
+
+    
+    def read_original_dataset(self) -> pd.DataFrame:
+        data_dir = Path('/kaggle/input/exam-score-prediction-dataset') if self.running_in_kaggle() else Path('original_data')
+
+        original_df = pd.read_csv(data_dir / 'Exam_Score_Prediction.csv')
+        print('ORIGINAL DATASET')
+        print('================\n')
+        print(original_df.head(5))
+
+        return original_df
 
 
     def read_sample_submission_dataset(self) -> pd.DataFrame:
