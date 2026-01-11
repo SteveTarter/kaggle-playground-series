@@ -104,11 +104,11 @@ class TestFeatureFactory(unittest.TestCase):
         
         # Check 1: Effective Effort (One Hot * Hours)
         # Row 1 is 'self-study' (4.95 hrs). 'effort_self-study_hours' should be 4.95
-        self.assertIn('effort_self-study_hours', df_trans.columns)
-        self.assertAlmostEqual(df_trans.loc[1, 'effort_self-study_hours'], 4.95)
+        self.assertIn('effort_self_study_hours', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[1, 'effort_self_study_hours'], 4.95)
         # Row 1 'effort_online videos_hours' should be 0
-        self.assertIn('effort_online videos_hours', df_trans.columns)
-        self.assertEqual(df_trans.loc[1, 'effort_online videos_hours'], 0.0)
+        self.assertIn('effort_online_videos_hours', df_trans.columns)
+        self.assertEqual(df_trans.loc[1, 'effort_online_videos_hours'], 0.0)
         
         # Check 2: Restoration Index (Sleep Hours * Quality Num)
         # Row 0: 4.9 hrs * Average(2) = 9.8

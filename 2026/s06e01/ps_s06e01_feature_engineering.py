@@ -233,8 +233,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # This helps the model isolate the "slope" of study_hours for specific methods.
         methods = pd.get_dummies(df['study_method'], prefix='effort')
         for col in methods.columns:
+            # Clean the name: 'effort_self-study' -> 'effort_self_study'
+            clean_base = col.replace(' ', '_').replace('-', '_')
+            if self.verbose:
+                print(f'    Adding {clean_base}_hours')
+                
             # e.g., creates 'effort_Spaced' = study_hours * 1 (if Spaced) else 0
-            df[f'{col}_hours'] = methods[col] * df['study_hours']
+            df[f'{clean_base}_hours'] = methods[col] * df['study_hours']
             
         # Interaction 2: Restoration Index (Num x Ordinal)
         # Logic: Sleep duration needs to be qualified by sleep quality.
