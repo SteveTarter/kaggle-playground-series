@@ -19,10 +19,14 @@ class _AggSpec:
 
 class FeatureFactory(BaseEstimator, TransformerMixin):
     """
-    Centralized factory for creating new numeric and engineered features.
-    
-    It focuses on creating new numeric features (ratios, polynomials) and
-    transforming existing numeric features (log transforms).
+    Feature engineering with optional:
+      - binning of key numeric columns
+      - interaction features (including stable study_method dummy interactions)
+      - clustering features via StandardScaler + KMeans
+
+    Critical invariants:
+      - Any columns created from categoricals must be stable between fit/transform.
+      - Any "learned" transformations (scaler/kmeans) must be fit only on training data.
     """
     valid_strategies = [
         'drop_id',
@@ -49,6 +53,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         self.target = target
         self.verbose = verbose
         self.n_clusters = n_clusters
+
+        # Learned state (fit-time)
+        self._scaler: Optional[StandardScaler] = None
+        self._kmeans: Optional[StandardScaler] = None
+
+        # Learned stable dummy columns for study_method
+        self._study_method_dummy_cols: Optional[List[str]] = None
         
         invalid_strategies = set()
         
@@ -62,48 +73,52 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if len(invalid_strategies) > 0:
             invalid_list_str = ','.join(invalid_strategies)
             raise ValueError(f'Invalid FeatureFactory strategies requested: {invalid_list_str}')
-            
-        # Select features for clustering
-        self.cluster_cols = ['study_hours', 'class_attendance']
 
-        # If interactions are active, add 'restoration_index'
+        # Column lists
+        self.base_cols = [
+            'study_hours',
+            'sleep_hours',
+            'class_attendance',
+            'exam_score',
+        ]
+        self.cluster_cols = [
+            'study_hours',
+            'sleep_hours',
+            'class_attendance',
+        ]
+        
+        # If interactions are active, add 'restoration_index' to clustering columns.
         if 'interactions' in self.strategies:
             self.cluster_cols.append('restoration_index')
             
         # Learned state (set in fit)
         self._is_fit: bool = False
-        self._scaler: Optional[StandardScaler] = None
-        self._kmeans: Optional[StandardScaler] = None
 
+    
+    # ----------------------------
+    # Public API
+    # ----------------------------
     def fit(self, df: pd.DataFrame = None) -> 'FeatureFactory':
-        df = df.copy()
-        
-        # If we need interaction columns for clustering, we must create them first
+        if self.verbose:
+            print("  -> Fitting DataFrame...")
+            
+        df_new = df.copy()
+
+        if 'binning' in self.strategies:
+            df_new = self._add_binning(df_new)
+            
         if 'interactions' in self.strategies:
-            df = self._add_interactions(df)
+            # This is pure feature construction EXCEPT the stable dummy column set;
+            # we learn the dummy column set here.
+            df_new = self._add_interactions_fit(df_new)
             
-        cluster_cols = [c for c in self.cluster_cols if c in df.columns]
-
-        if 'clustering' in self.strategies and cluster_cols:
-            if self.verbose:
-                print("  -> Fitting K-Means Clustering...")
-
-            # SAFEGUARD: Ensure we don't request more clusters than samples
-            n_samples = len(df)
-            actual_n_clusters = min(self.n_clusters, n_samples - 1) if n_samples > 1 else 1
-            
-            # Scale the data
-            # K-Means is distance-based; different scales distort the geometry.
-            self._scaler = StandardScaler()
-            # Scale fitting data
-            X_cluster = self._scaler.fit_transform(df[cluster_cols])
-            
-            self._kmeans = KMeans(n_clusters=actual_n_clusters, random_state=self.seed, n_init=10)
-            self._kmeans.fit(X_cluster)
+        if 'clustering' in self.strategies:
+            self._add_clustering_fit(df_new)
 
         self._is_fit = True
         return self
 
+    
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self._is_fit:
             raise RuntimeError('FeatureFactory must be fit() before transform().')
@@ -112,32 +127,59 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print(f"Applying FeatureFactory with strategies: {', '.join(self.strategies)}")
         
         df_new = df.copy()
-        
+            
         if 'drop_id' in self.strategies:
             df_new = self._drop_ids(df_new)
         
         if 'ordinal_encoding' in self.strategies:
             df_new = self._add_ordinal_encoding(df_new)
             
-        if 'interactions' in self.strategies:
-            df_new = self._add_interactions(df_new)
-        
         if 'binning' in self.strategies:
             df_new = self._add_binning(df_new)
+            
+        if 'interactions' in self.strategies:
+            df_new = self._add_interactions_transform(df_new)
         
         if 'clustering' in self.strategies:
-            df_new = self._add_clustering(df_new)
+            df_new = self._add_clustering_transform(df_new)
             
         return df_new
 
+    
+    def fit_transform(self, df:pd.DataFrame) -> pd.DataFrame:
+        return self.fit(df).transform(df)
+        
     def get_strategies(self) -> []:
         return self.strategies
 
     # -------------------------
     # Internals
     # -------------------------
+    @staticmethod
+    def _safe_cut_codes(s: pd.Series, bins, labels=None, include_lowest=True) -> pd.Series:
+        """
+        Returns integer codes, with NaN -> -1, safe for missing values.
+        """
+        cat = pd.cut(s, bins=bins, labels=labels, include_lowest=include_lowest)
+        # cat.codes gives -1 for NaN
+        return cat.cat.codes.astype("int16")
         
         
+    @staticmethod
+    def _normalize_dummy_name(col: str) -> str:
+        """
+        Normalize dummy column names so they are stable and model-safe.
+        Example:
+            'effort_self-study' -> 'effort_self_study'
+            'effort_group study' -> 'effort_group_study'
+        """
+        return (
+            col.strip()
+               .replace(" ", "_")
+               .replace("-", "_")
+        )
+
+    
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
         if self.verbose:
@@ -197,95 +239,237 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Class Attendance
         # In many universities, dropping below 75% attendance triggers an automatic failure or exclusion from exams.
         # 0: Critical (<60%), 1: Warning (60-80), 2: Safe (>= 80%)
-        df['class_attendance_class'] = pd.cut(
-            df['class_attendance'], 
-            bins=[-1, 60.0, 80.0, 100.1], 
-            labels=[0, 1, 2]
-        ).astype(int)
+        if 'class_attendance' in df.columns:
+            df['class_attendance_class'] = self._safe_cut_codes(
+                df['class_attendance'], 
+                bins=[-1, 60.0, 80.0, 100.1], 
+                labels=[0, 1, 2]
+            ).astype(int)
         
         # Sleep Hours Classes
         # Sleep usually has a U-shaped relationship with performance.
         # 0: Deprived (< 6 hours), 1: Optimal (6-9 hours), 2: Excess (> 9 hours)
-        df['sleep_hours_class'] = pd.cut(
-            df['sleep_hours'],
-            bins=[-1, 6.0, 9.0, 24.0],
-            labels=[0, 1, 2]
-        ).astype(int)
+        if 'sleep_hours' in df.columns:
+            df['sleep_hours_class'] = self._safe_cut_codes(
+                df['sleep_hours'],
+                bins=[-1, 6.0, 9.0, 24.0],
+                labels=[0, 1, 2]
+            ).astype(int)
         
         # Study Hours Classes
         # Diminishing Returns.  Why bin it? The benefit of studying is not infinite.
         # 0: Low (< 2 hours), 1: Target (2-6 hours), 2: Burnout (> 6 hours)
-        df['study_hours_class'] = pd.cut(
-            df['study_hours'],
-            bins=[-1, 2.0, 6.0, 100.0],
-            labels=[0, 1, 2]
-        ).astype(int)
+        if 'study_hours' in df.columns:
+            df['study_hours_class'] = self._safe_cut_codes(
+                df['study_hours'],
+                bins=[-1, 2.0, 6.0, 100.0],
+                labels=[0, 1, 2]
+            ).astype(int)
         
         return df
-    
-    def _add_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
-        if self.verbose:
-            print('  -> Adding interactions (Effective Effort, Restoration Index, Engagement Multiplier, Resource Efficiency)...')
 
-        # Interaction 1: Effective Effort (Num x Cat)
-        # Logic: 10 hours of 'Cramming' != 10 hours of 'Spaced Repetition'.
-        # We create specific features for each method weighted by hours.
-        # This helps the model isolate the "slope" of study_hours for specific methods.
-        methods = pd.get_dummies(df['study_method'], prefix='effort')
-        for col in methods.columns:
-            # Clean the name: 'effort_self-study' -> 'effort_self_study'
-            clean_base = col.replace(' ', '_').replace('-', '_')
-            if self.verbose:
-                print(f'    Adding {clean_base}_hours')
+
+    def _add_interactions_core(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Core interactions (purely derived, no learned state),
+        but must be NaN-safe because clustering/scaling may use these values.
+        """
+        eps = 1e-6
+
+        # Ratio features
+        if 'study_hours' in df.columns:
+            if 'sleep_hours' in df.columns:
+                df['study_to_sleep_ratio'] = df['study_hours'] / (df['sleep_hours'] + eps)
+            if 'class_attendance' in df.columns:
+                df['attendance_to_study_ratio'] = df['class_attendance'] / (df['study_hours'] + eps)
                 
-            # e.g., creates 'effort_Spaced' = study_hours * 1 (if Spaced) else 0
-            df[f'{clean_base}_hours'] = methods[col] * df['study_hours']
-            
-        # Interaction 2: Restoration Index (Num x Ordinal)
-        # Logic: Sleep duration needs to be qualified by sleep quality.
-        # We map the categorical quality to a numeric scale (Ordinal Encoding)
-        # and multiply to get a "Total Rest" volume.
-        quality_map = {'poor': 1, 'average': 2, 'good': 3}
-        
-        # Create temp numeric column for calculation
-        df['sleep_quality_num'] = df['sleep_quality'].map(quality_map)
-        df['restoration_index'] = df['sleep_hours'] * df['sleep_quality_num']
-    
-        # Interaction 3: Engagement Multiplier (Num x Num)
-        # Logic: High attendance AND High study hours suggests a top performer.
-        # We use multiplication to highlight the compound effect.
-        df['total_engagement'] = df['study_hours'] * df['class_attendance']
-    
-        # Logic: "Autodidact Ratio". High study hours but LOW attendance.
-        # We add a small epsilon (1e-5) to avoid division by zero.
-        df['autodidact_ratio'] = df['study_hours'] / (df['class_attendance'] + 1e-5)
-    
-        # Interaction 4: Resource Efficiency (Num x Ordinal)
-        # Logic: Facility rating acts as a friction coefficient.
-        # We map facility to a scale. If facility is 'Low' (1), study hours might count for less.
-        facility_map = {'low': 0.8, 'medium': 1.0, 'high': 1.2} # Custom weights based on domain intuition
-        
-        df['facility_weight'] = df['facility_rating'].map(facility_map)
-        df['weighted_study_hours'] = df['study_hours'] * df['facility_weight']
-    
+                # Engagement Multiplier (Num x Num)
+                # Logic: High attendance AND High study hours suggests a top performer.
+                # We use multiplication to highlight the compound effect.
+                df['total_engagement'] = df['study_hours'] * df['class_attendance']
+                
+                # "Autodidact Ratio". High study hours but LOW attendance.
+                # We add a small epsilon (1e-5) to avoid division by zero.
+                df['autodidact_ratio'] = df['study_hours'] / (df['class_attendance'] + 1e-5)
+
+            if 'facility_rating' in df.columns:
+                # Resource Efficiency (Num x Ordinal)
+                # Logic: Facility rating acts as a friction coefficient.
+                # We map facility to a scale. If facility is 'Low' (1), study hours might count for less.
+                facility_map = {
+                    'low': 0.8, 'medium': 1.0, 'high': 1.2
+                }
+                df['facility_weight'] = df.get('facility_rating').map(facility_map).astype("float32")
+                df['facility_weight'] = df['facility_weight'].fillna(1.0)
+                df['weighted_study_hours'] = df['study_hours'].astype("float32") * df['facility_weight']
+
+        if 'sleep_quality' in df.columns and 'sleep_hours' in df.columns:
+            # Restoration Index (Num x Ordinal)
+            # Logic: Sleep duration needs to be qualified by sleep quality.
+            # We map the categorical quality to a numeric scale (Ordinal Encoding)
+            # and multiply to get a "Total Rest" volume.
+            sleep_map = {
+                'poor': 1, 'average': 2, 'good': 3
+            }
+            df['sleep_quality_num'] = df.get('sleep_quality').map(sleep_map).astype("float32")
+            df['sleep_quality_num'] = df['sleep_quality_num'].fillna(0.0)
+            df['restoration_index'] = df['sleep_hours'].astype("float32") * df['sleep_quality_num']
+
         # Cleanup: Drop intermediate columns
         drop_cols = ['sleep_quality_num', 'facility_weight'] 
         df.drop(columns=drop_cols, inplace=True, errors='ignore')
         
         return df
 
-    def _add_clustering(self, df: pd.DataFrame) -> pd.DataFrame:
-        if self.verbose:
-            print('  -> Adding unsupervised clusters...')
+    
+    def _add_interactions_fit(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Fit-time version:
+          - compute numeric interactions
+          - learn the stable set of dummy columns for study_method
+        """
+        df = self._add_interactions_core(df)
+
+        if 'study_method' in df.columns and 'study_hours' in df.columns:
+            raw_dummies = pd.get_dummies(
+                df.get('study_method'),
+                prefix='effort',
+                dummy_na=False
+            )
         
-        # We must use the SAME features used in fit()
-        cluster_cols = [c for c in self.cluster_cols if c in df.columns]
+            # Normalize dummy column names ONCE and store them
+            rename_map = {
+                col: self._normalize_dummy_name(col)
+                for col in raw_dummies.columns
+            }
         
-        if hasattr(self, '_kmeans') and self._kmeans is not None and cluster_cols:
-            # Must handle NaN if interactions created NaNs (though we handle map fillna usually)
-            df[cluster_cols] = df[cluster_cols].fillna(0)
-            
-            df_cluster = self._scaler.transform(df[cluster_cols])
-            df['cluster_label'] = self._kmeans.predict(df_cluster)
+            dummies = raw_dummies.rename(columns=rename_map)
+        
+            # Persist the normalized column list (stable feature space)
+            self._study_method_dummy_cols = list(dummies.columns)
+        
+            # Create interaction features
+            for col in self._study_method_dummy_cols:
+                df[f"{col}_hours"] = (
+                    dummies[col].astype("float32") *
+                    df['study_hours'].astype("float32")
+                )
+    
+        return df
+
+    
+    def _add_interactions_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Transform-time version:
+          - compute numeric interactions
+          - create the SAME dummy columns learned in fit(), in the SAME order
+        """
+        if self._is_fit is False:
+            raise RuntimeError("FeatureFactory.transform called before fit (study_method dummy columns not learned).")
+
+        df = self._add_interactions_core(df)
+
+        if 'study_method' in df.columns and 'study_hours' in df.columns:
+            raw_dummies = pd.get_dummies(
+                df.get('study_method'),
+                prefix='effort',
+                dummy_na=False
+            )
+        
+            # Apply the SAME normalization
+            raw_dummies = raw_dummies.rename(
+                columns={col: self._normalize_dummy_name(col) for col in raw_dummies.columns}
+            )
+        
+            # Enforce stable column set and order
+            dummies = raw_dummies.reindex(
+                columns=self._study_method_dummy_cols,
+                fill_value=0
+            )
+        
+            for col in self._study_method_dummy_cols:
+                df[f"{col}_hours"] = (
+                    dummies[col].astype("float32") *
+                    df['study_hours'].astype("float32")
+                )
         
         return df
+
+        
+    def _add_clustering_fit(self, df: pd.DataFrame) -> None:
+        if self.verbose:
+            print(f'cluster_cols before: {self.cluster_cols}')
+            
+        # Ensure that all clustering columns exist
+        self.cluster_cols = [c for c in self.cluster_cols if c in df.columns]
+
+        if self.verbose:
+            print(f'cluster_cols after:  {self.cluster_cols}')
+            
+        X_cluster = df[self.cluster_cols].copy()
+
+        # KMeans/Scaler cannot handle NaN. Fill with median (fit-time medians).
+        # (Store medians for transform-time consistency.)
+        self._cluster_fill_values_ = X_cluster.median(numeric_only=True)
+        X_cluster = X_cluster.fillna(self._cluster_fill_values_)
+
+        self._scaler = StandardScaler()
+        X_scaled = self._scaler.fit_transform(X_cluster)
+
+        self._kmeans = KMeans(
+            n_clusters=self.n_clusters,
+            random_state=self.seed,
+            n_init=10,
+        )
+        self._kmeans.fit(X_scaled)
+
+
+    def _add_clustering_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._scaler is None or self._kmeans is None:
+            raise RuntimeError("Clustering requested but scaler/kmeans not fit. Call fit() first.")
+
+        missing = [c for c in self.cluster_cols if c not in df.columns]
+        if missing:
+            raise ValueError(f"Missing clustering columns at transform-time: {missing}")
+
+        X_cluster = df[self.cluster_cols].copy()
+
+        # Use fit-time medians for fill to keep consistency across folds/test
+        fill_vals = getattr(self, "_cluster_fill_values_", None)
+        if fill_vals is None:
+            # Should never happen if fit() was called
+            fill_vals = X_cluster.median(numeric_only=True)
+
+        X_cluster = X_cluster.fillna(fill_vals)
+
+        X_scaled = self._scaler.transform(X_cluster)
+        df['cluster_label'] = self._kmeans.predict(X_scaled).astype("int16")
+        return df
+
+
+    def get_cat_features(self, df: pd.DataFrame) -> List[str]:
+        """
+        Prefer explicit cat features:
+          - object/category columns
+          - your binned classes + cluster label
+        Avoid auto-marking low-cardinality numeric columns as categorical unless intended.
+        """
+        cat_cols = []
+
+        for col in df.columns:
+            if df[col].dtype == 'object' or str(df[col].dtype).startswith("category"):
+                cat_cols.append(col)
+
+        # Explicit discrete engineered columns
+        for c in ['attendance_class', 'sleep_class', 'study_class', 'cluster_label']:
+            if c in df.columns:
+                cat_cols.append(c)
+
+        # Ensure uniqueness, stable order
+        seen = set()
+        out = []
+        for c in cat_cols:
+            if c not in seen:
+                out.append(c)
+                seen.add(c)
+        return out

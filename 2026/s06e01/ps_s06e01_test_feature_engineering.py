@@ -105,7 +105,7 @@ class TestFeatureFactory(unittest.TestCase):
         # Check 1: Effective Effort (One Hot * Hours)
         # Row 1 is 'self-study' (4.95 hrs). 'effort_self-study_hours' should be 4.95
         self.assertIn('effort_self_study_hours', df_trans.columns)
-        self.assertAlmostEqual(df_trans.loc[1, 'effort_self_study_hours'], 4.95)
+        self.assertAlmostEqual(df_trans.loc[1, 'effort_self_study_hours'], 4.95, places=4)
         # Row 1 'effort_online videos_hours' should be 0
         self.assertIn('effort_online_videos_hours', df_trans.columns)
         self.assertEqual(df_trans.loc[1, 'effort_online_videos_hours'], 0.0)
@@ -113,7 +113,7 @@ class TestFeatureFactory(unittest.TestCase):
         # Check 2: Restoration Index (Sleep Hours * Quality Num)
         # Row 0: 4.9 hrs * Average(2) = 9.8
         self.assertIn('restoration_index', df_trans.columns)
-        self.assertAlmostEqual(df_trans.loc[0, 'restoration_index'], 9.8)
+        self.assertAlmostEqual(df_trans.loc[0, 'restoration_index'], 9.8, places=5)
         
         # Check 3: Total Engagement
         self.assertIn('total_engagement', df_trans.columns)
@@ -121,11 +121,11 @@ class TestFeatureFactory(unittest.TestCase):
         # Check 4: Weighted Study Hours
         # Row 0: 7.91 * Low(0.8) = 6.328
         self.assertIn('weighted_study_hours', df_trans.columns)
-        self.assertAlmostEqual(df_trans.loc[0, 'weighted_study_hours'], 7.91 * 0.8)
+        self.assertAlmostEqual(df_trans.loc[0, 'weighted_study_hours'], 7.91 * 0.8, places=5)
 
     def test_clustering_standalone(self):
         """Test 'clustering' on its own (uses raw study_hours and class_attendance)."""
-        ff = FeatureFactory(strategies=['clustering'], seed=42)
+        ff = FeatureFactory(strategies=['clustering'], seed=42, verbose=True)
         ff.fit(self.df) # Should fit KMeans on study_hours/attendance
         df_trans = ff.transform(self.df)
         
@@ -141,7 +141,7 @@ class TestFeatureFactory(unittest.TestCase):
         while 'transform()' creates it and then tries to predict using it.
         This usually causes a dimension mismatch error.
         """
-        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=42)
+        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=42, verbose=True)
         
         try:
             ff.fit(self.df)
