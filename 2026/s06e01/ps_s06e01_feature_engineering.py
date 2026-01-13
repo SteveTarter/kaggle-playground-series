@@ -56,7 +56,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         # Learned state (fit-time)
         self._scaler: Optional[StandardScaler] = None
-        self._kmeans: Optional[StandardScaler] = None
+        self._kmeans: Optional[KMeans] = None
 
         # Learned stable dummy columns for study_method
         self._study_method_dummy_cols: Optional[List[str]] = None
@@ -369,6 +369,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         df = self._add_interactions_core(df)
 
+        if self._study_method_dummy_cols is None:
+            return df
+
         if 'study_method' in df.columns and 'study_hours' in df.columns:
             raw_dummies = pd.get_dummies(
                 df.get('study_method'),
@@ -461,7 +464,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 cat_cols.append(col)
 
         # Explicit discrete engineered columns
-        for c in ['attendance_class', 'sleep_class', 'study_class', 'cluster_label']:
+        for c in ['class_attendance_class', 'sleep_hours_class', 'study_hours_class', 'cluster_label']:
             if c in df.columns:
                 cat_cols.append(c)
 
