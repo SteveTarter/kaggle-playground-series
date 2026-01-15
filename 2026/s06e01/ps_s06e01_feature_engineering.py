@@ -34,6 +34,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'binning',
         'interactions',
         'clustering',
+        'polynomials',
+        'log',
+        'manual_formula'
     ]
     
     def __init__(
@@ -60,7 +63,10 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         # Learned stable dummy columns for study_method
         self._study_method_dummy_cols: Optional[List[str]] = None
-        
+
+        self._cluster_cols_fit_ = None
+        self._cluster_fill_values_ = None
+
         invalid_strategies = set()
         
         # Validate and store only the requested strategies
@@ -136,12 +142,21 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             
         if 'binning' in self.strategies:
             df_new = self._add_binning(df_new)
+
+        if 'log' in self.strategies:
+            df_new = self._add_log(df_new)
+
+        if 'polynomials' in self.strategies:
+            df_new = self._add_polynomials(df_new)
             
         if 'interactions' in self.strategies:
             df_new = self._add_interactions_transform(df_new)
         
         if 'clustering' in self.strategies:
             df_new = self._add_clustering_transform(df_new)
+
+        if 'manual_formula' in self.strategies:
+            df_new = self._add_manual_formula(df_new)
             
         return df_new
 
@@ -269,6 +284,79 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         return df
 
 
+    def _add_log(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding log of selected features...')
+
+        if 'age' in df.columns:
+            df['log_age'] = np.log1p(df['age'])
+
+        if 'study_hours' in df.columns:
+            df['log_study_hours'] = np.log1p(df['study_hours'])
+
+        if 'class_attendance' in df.columns:
+            df['log_class_attendance'] = np.log1p(df['class_attendance'])
+
+        if 'sleep_hours' in df.columns:
+            df['log_sleep_hours'] = np.log1p(df['sleep_hours'])
+
+        return df
+
+        
+    def _add_polynomials(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding polynomials of selected features...')
+
+        if 'age' in df.columns:
+            df['age_sq'] = df['age'] * df['age']
+
+        if 'study_hours' in df.columns:
+            df['study_hours_sq'] = df['study_hours'] * df['study_hours']
+
+        if 'class_attendance' in df.columns:
+            df['class_attendance_sq'] = df['class_attendance'] * df['class_attendance']
+
+        if 'sleep_hours' in df.columns:
+            df['sleep_hours_sq'] = df['sleep_hours'] * df['sleep_hours']
+
+        return df
+
+
+    def _add_manual_formula(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        This feature was discussed here: https://www.kaggle.com/competitions/playground-series-s6e1/discussion/666695
+        This appears to be a powerful feature.
+        """
+        if self.verbose:
+            print('  -> Adding manual formula of selected features...')
+
+        # Return without doing anything if all of the necessary features aren't present
+        needed_cols = ['sleep_quality', 'facility_rating', 'study_method', 'study_hours', 'class_attendance']
+        for col in needed_cols:
+            if col not in df.columns:
+                return df
+        
+        LUT = {
+            'sleep_quality': {'good': 5, 'average': 0, 'poor': -5},
+            'facility_rating': {'high': 4, 'medium': 0, 'low': -4},
+            'study_method': {
+                'coaching': 10,
+                'mixed': 5,
+                'group study': 2,
+                'online videos': 1,
+                'self-study': 0
+            }
+        }
+
+        df['manual_formula'] = 6.0 * df['study_hours'] + 0.35 * df['class_attendance'] \
+                + 1.5 * df['sleep_hours'] \
+                + df['sleep_quality'].map(LUT['sleep_quality']) \
+                + df['study_method'].map(LUT['study_method']) \
+                + df['facility_rating'].map(LUT['facility_rating'])
+
+        return df
+
+        
     def _add_interactions_core(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Core interactions (purely derived, no learned state),
@@ -278,8 +366,11 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         # Ratio features
         if 'study_hours' in df.columns:
+            df['high_study'] = (df['study_hours'] >= 7).astype(int)
+            
             if 'sleep_hours' in df.columns:
                 df['study_to_sleep_ratio'] = df['study_hours'] / (df['sleep_hours'] + eps)
+                
             if 'class_attendance' in df.columns:
                 df['attendance_to_study_ratio'] = df['class_attendance'] / (df['study_hours'] + eps)
                 
@@ -315,6 +406,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             df['sleep_quality_num'] = df['sleep_quality_num'].fillna(0.0)
             df['restoration_index'] = df['sleep_hours'].astype("float32") * df['sleep_quality_num']
 
+        if 'study_hours' in df.columns and 'class_attendance' in df.columns:
+            df['study_att'] = df['study_hours'] * df['class_attendance']
+            
         # Cleanup: Drop intermediate columns
         drop_cols = ['sleep_quality_num', 'facility_weight'] 
         df.drop(columns=drop_cols, inplace=True, errors='ignore')
@@ -402,23 +496,28 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     def _add_clustering_fit(self, df: pd.DataFrame) -> None:
         if self.verbose:
             print(f'cluster_cols before: {self.cluster_cols}')
-            
-        # Ensure that all clustering columns exist
-        self.cluster_cols = [c for c in self.cluster_cols if c in df.columns]
 
-        if self.verbose:
-            print(f'cluster_cols after:  {self.cluster_cols}')
-            
-        X_cluster = df[self.cluster_cols].copy()
+        # Determine which clustering columns are actually present
+        cluster_cols_present = [c for c in self.cluster_cols if c in df.columns]
+    
+        if not cluster_cols_present:
+            raise ValueError(
+                "Clustering requested but none of the clustering columns are present. "
+                f"Expected one of: {self.cluster_cols}"
+            )
+    
+        self._cluster_cols_fit_ = cluster_cols_present
+    
+        X_cluster = df[cluster_cols_present].copy()
 
-        # KMeans/Scaler cannot handle NaN. Fill with median (fit-time medians).
-        # (Store medians for transform-time consistency.)
+
+        # KMeans / StandardScaler cannot handle NaN
         self._cluster_fill_values_ = X_cluster.median(numeric_only=True)
         X_cluster = X_cluster.fillna(self._cluster_fill_values_)
-
+    
         self._scaler = StandardScaler()
         X_scaled = self._scaler.fit_transform(X_cluster)
-
+    
         self._kmeans = KMeans(
             n_clusters=self.n_clusters,
             random_state=self.seed,
@@ -426,27 +525,23 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         )
         self._kmeans.fit(X_scaled)
 
-
+    
     def _add_clustering_transform(self, df: pd.DataFrame) -> pd.DataFrame:
-        if self._scaler is None or self._kmeans is None:
-            raise RuntimeError("Clustering requested but scaler/kmeans not fit. Call fit() first.")
+        if self._scaler is None or self._kmeans is None or self._cluster_cols_fit_ is None:
+            raise RuntimeError("Clustering requested but FeatureFactory was not fit properly.")
 
-        missing = [c for c in self.cluster_cols if c not in df.columns]
+        missing = [c for c in self._cluster_cols_fit_ if c not in df.columns]
         if missing:
-            raise ValueError(f"Missing clustering columns at transform-time: {missing}")
+            raise ValueError(
+                f"Missing clustering columns at transform-time: {missing}"
+            )
 
         X_cluster = df[self.cluster_cols].copy()
-
-        # Use fit-time medians for fill to keep consistency across folds/test
-        fill_vals = getattr(self, "_cluster_fill_values_", None)
-        if fill_vals is None:
-            # Should never happen if fit() was called
-            fill_vals = X_cluster.median(numeric_only=True)
-
-        X_cluster = X_cluster.fillna(fill_vals)
+        X_cluster = X_cluster.fillna(self._cluster_fill_values_)
 
         X_scaled = self._scaler.transform(X_cluster)
         df['cluster_label'] = self._kmeans.predict(X_scaled).astype("int16")
+        
         return df
 
 

@@ -34,12 +34,9 @@ class TestFeatureFactory(unittest.TestCase):
         """Test that invalid strategies raise a ValueError."""
         with self.assertRaises(ValueError):
             FeatureFactory(strategies=['invalid_strategy'])
-        
+
         # Should not raise
-        try:
-            FeatureFactory(strategies=['drop_id', 'binning'])
-        except ValueError:
-            self.fail("FeatureFactory raised ValueError on valid strategies")
+        FeatureFactory(strategies=['drop_id', 'binning', 'interactions', 'clustering', 'polynomials', 'log', 'manual_formula'])
 
     def test_drop_id(self):
         """Test 'drop_id' strategy removes id and target columns."""
@@ -95,6 +92,58 @@ class TestFeatureFactory(unittest.TestCase):
         # Row 0 Study Hours = 7.91. Bins: 6..10 is class 2.
         self.assertIn('study_hours_class', df_trans.columns)
         self.assertEqual(df_trans.loc[0, 'study_hours_class'], 2)
+
+    def test_log(self):
+        ff = FeatureFactory(strategies=['log'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('log_age', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_age'], np.log1p(21), places=8)
+
+        self.assertIn('log_study_hours', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_study_hours'], np.log1p(7.91), places=8)
+
+        self.assertIn('log_class_attendance', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_class_attendance'], np.log1p(98.8), places=8)
+
+        self.assertIn('log_sleep_hours', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_sleep_hours'], np.log1p(4.9), places=8)
+
+    def test_polynomials(self):
+        ff = FeatureFactory(strategies=['polynomials'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('age_sq', df_trans.columns)
+        self.assertEqual(df_trans.loc[0, 'age_sq'], 21 * 21)
+
+        self.assertIn('study_hours_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'study_hours_sq'], 7.91 * 7.91, places=8)
+
+        self.assertIn('class_attendance_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'class_attendance_sq'], 98.8 * 98.8, places=8)
+
+        self.assertIn('sleep_hours_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'sleep_hours_sq'], 4.9 * 4.9, places=8)
+
+    def test_manual_formula(self):
+        ff = FeatureFactory(strategies=['manual_formula'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('manual_formula', df_trans.columns)
+
+        # Row 0:
+        # 6*study_hours + 0.35*attendance + 1.5*sleep_hours
+        # + sleep_quality(avg=0) + study_method(online videos=1) + facility(low=-4)
+        expected = (
+            6.0 * 7.91 +
+            0.35 * 98.8 +
+            1.5 * 4.9 +
+            0 + 1 + (-4)
+        )
+        self.assertAlmostEqual(df_trans.loc[0, 'manual_formula'], expected, places=5)
 
     def test_interactions(self):
         """Test 'interactions' creates combined features."""
