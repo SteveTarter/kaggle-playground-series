@@ -36,7 +36,10 @@ class TestFeatureFactory(unittest.TestCase):
             FeatureFactory(strategies=['invalid_strategy'])
 
         # Should not raise
-        FeatureFactory(strategies=['drop_id', 'binning', 'interactions', 'clustering', 'polynomials', 'log', 'manual_formula'])
+        FeatureFactory(strategies=[
+            'drop_id', 'binning', 'interactions', 'clustering', 
+            'polynomials', 'log', 'manual_formula', 'cyclical', 'frequency'
+        ])
 
     def test_drop_id(self):
         """Test 'drop_id' strategy removes id and target columns."""
@@ -205,5 +208,50 @@ class TestFeatureFactory(unittest.TestCase):
             else:
                 raise e
 
+    def test_cyclical(self):
+        """Test 'cyclical' strategy creates sine features."""
+        ff = FeatureFactory(strategies=['cyclical'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('_study_hours_sin', df_trans.columns)
+        self.assertIn('_class_attendance_sin', df_trans.columns)
+
+        # Verification
+        # Row 0: study_hours = 7.91
+        expected_study = np.sin(2 * np.pi * 7.91 / 12).astype('float32')
+        self.assertAlmostEqual(df_trans.loc[0, '_study_hours_sin'], expected_study, places=4)
+
+        # Row 0: class_attendance = 98.8
+        expected_attendance = np.sin(2 * np.pi * 98.8 / 12).astype('float32')
+        self.assertAlmostEqual(df_trans.loc[0, '_class_attendance_sin'], expected_attendance, places=4)
+        
+    def test_frequency(self):
+        """Test 'frequency' strategy maps counts."""
+        ff = FeatureFactory(strategies=['frequency'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # In self.df['gender']:
+        # female: rows 0, 2, 7 = 3
+        # other: rows 1, 8 = 2
+        # male: rows 3, 4, 5, 6, 9 = 5
+        self.assertIn('gender_freq', df_trans.columns)
+
+        # Row 0 is 'female', freq should be 3
+        self.assertEqual(df_trans.loc[0, 'gender_freq'], 3)
+        # Row 3 is 'male', freq should be 5
+        self.assertEqual(df_trans.loc[3, 'gender_freq'], 5)
+
+        # Test Leakage Prevention / Unseen Categories:
+        # Create a new dataframe to act as 'test' set with an unseen gender 'alien'
+        new_data = pd.DataFrame({'gender': ['alien'], 'id': [99]})
+        
+        # Transform should use the counts learned from fit() (where 'alien' was not present)
+        # So 'alien' should get count 0
+        df_new_trans = ff.transform(new_data)
+        self.assertIn('gender_freq', df_new_trans.columns)
+        self.assertEqual(df_new_trans.loc[0, 'gender_freq'], 0)  
+        
 if __name__ == '__main__':
     unittest.main()

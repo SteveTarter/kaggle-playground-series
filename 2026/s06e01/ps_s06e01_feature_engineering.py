@@ -36,7 +36,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'clustering',
         'polynomials',
         'log',
-        'manual_formula'
+        'manual_formula',
+        'cyclical',
+        'frequency'
     ]
     
     def __init__(
@@ -121,6 +123,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'clustering' in self.strategies:
             self._add_clustering_fit(df_new)
 
+        if 'frequency' in self.strategies:
+            self._add_frequency_fit(df_new)
+            
         self._is_fit = True
         return self
 
@@ -157,6 +162,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'manual_formula' in self.strategies:
             df_new = self._add_manual_formula(df_new)
+
+        if 'cyclical' in self.strategies:
+            df_new = self._add_cyclical(df_new)
+
+        if 'frequency' in self.strategies:
+            df_new = self._add_frequency_transform(df_new)
             
         return df_new
 
@@ -301,7 +312,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             df['log_sleep_hours'] = np.log1p(df['sleep_hours'])
 
         return df
-
+    
         
     def _add_polynomials(self, df: pd.DataFrame) -> pd.DataFrame:
         if self.verbose:
@@ -422,6 +433,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
           - compute numeric interactions
           - learn the stable set of dummy columns for study_method
         """
+        if self.verbose:
+            print('  -> Iteraction features: fitting...')
+
         df = self._add_interactions_core(df)
 
         if 'study_method' in df.columns and 'study_hours' in df.columns:
@@ -458,6 +472,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
           - compute numeric interactions
           - create the SAME dummy columns learned in fit(), in the SAME order
         """
+        if self.verbose:
+            print('  -> Iteraction features: transform...')
+
         if self._is_fit is False:
             raise RuntimeError("FeatureFactory.transform called before fit (study_method dummy columns not learned).")
 
@@ -495,6 +512,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
     def _add_clustering_fit(self, df: pd.DataFrame) -> None:
         if self.verbose:
+            print('  -> Clustering features: fitting...')
+
+        if self.verbose:
             print(f'cluster_cols before: {self.cluster_cols}')
 
         # Determine which clustering columns are actually present
@@ -527,6 +547,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     
     def _add_clustering_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Clustering features: transform...')
+            
         if self._scaler is None or self._kmeans is None or self._cluster_cols_fit_ is None:
             raise RuntimeError("Clustering requested but FeatureFactory was not fit properly.")
 
@@ -544,7 +567,61 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         return df
 
+    
+    def _add_frequency_fit(self, df: pd.DataFrame) -> None:
+        if self.verbose:
+            print('  -> Frequency features: fitting...')
 
+        # Dictionary to store counts for each column
+        self._freq_maps_ = {}
+
+        # Select categorical columns
+        cat_cols = self.get_cat_features(df)
+
+        for col in cat_cols:
+            # Calculate counts on TRAINING data only
+            # normalize=True gives percentage, False gives raw count. 
+            # Raw count is usually better for tree models to judge sample size.
+            counts = df[col].astype(str).value_counts().to_dict()
+            self._freq_maps_[col] = counts
+                
+
+    def _add_frequency_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Maps the frequencies learned during fit() to the current dataframe.
+        """
+        if self.verbose:
+            print('  -> Frequency features: fitting...')
+
+        if not hasattr(self, '_freq_maps_'):
+            raise RuntimeError("Frequency requested but FeatureFactory was not fit properly.")
+            
+        for col, freq_map in self._freq_maps_.items():
+            if col in df.columns:
+                # Map the saved counts. fillna(0) handles categories seen in Test but not Train.
+                df[f"{col}_freq"] = df[col].astype(str).map(freq_map).fillna(0).astype('int32')
+                
+        return df
+
+        
+    def _add_cyclical(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Applies Sine transformations to specific time-based or cyclical columns.
+        """
+        if self.verbose:
+            print('  -> Adding cyclicals of selected features...')
+            
+        # Sine features for Study Hours (assuming 12-hour cycle logic from snippet)
+        if 'study_hours' in df.columns:
+            df['_study_hours_sin'] = np.sin(2 * np.pi * df['study_hours'] / 12).astype('float32')
+            
+        # Sine features for Class Attendance
+        if 'class_attendance' in df.columns:
+            df['_class_attendance_sin'] = np.sin(2 * np.pi * df['class_attendance'] / 12).astype('float32')
+            
+        return df
+
+    
     def get_cat_features(self, df: pd.DataFrame) -> List[str]:
         """
         Prefer explicit cat features:
