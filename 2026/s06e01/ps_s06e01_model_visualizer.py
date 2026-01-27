@@ -9,6 +9,8 @@ class ModelVisualizer:
     Centralizes all visualization logic for Gradient Boosting models (XGBoost/CatBoost).
     """
     def __init__(self, palette='viridis', model_name=None):
+        print('In ModelVisualizer __init__...')
+        
         self.palette = palette
         self.model_name = model_name if model_name else "Model"
         plt.style.use('seaborn-v0_8-whitegrid') # Set a nice style
@@ -131,7 +133,16 @@ class ModelVisualizer:
         avg_imp = feature_importance.groupby('Feature')['Importance'].mean().sort_values(ascending=False).head(top_n)
 
         plt.figure(figsize=(10, len(avg_imp) * 0.4))
-        sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
+        
+        ax = sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
+
+        if show_values:
+            for container in ax.containers:
+                ax.bar_label(container, fmt='%.2f', padding=3, fontsize=10)
+
+            xmax = ax.get_xlim()[1]
+            ax.set_xlim(0, xmax * 1.15)
+            
         plt.title(f'{self.model_name} Top {top_n} Feature Importances (Average)')
         plt.xlabel('Importance')
         plt.show()

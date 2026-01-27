@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.cluster import KMeans
 
 from dataclasses import dataclass
@@ -23,7 +23,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
       - binning of key numeric columns
       - interaction features (including stable study_method dummy interactions)
       - clustering features via StandardScaler + KMeans
-
+      - one-hot encoding (for linear models)
+      - standard scaling (for linear models/NNs)
     Critical invariants:
       - Any columns created from categoricals must be stable between fit/transform.
       - Any "learned" transformations (scaler/kmeans) must be fit only on training data.
@@ -31,6 +32,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     valid_strategies = [
         'drop_id',
         'ordinal_encoding',
+        'one_hot_encoding',
         'binning',
         'interactions',
         'clustering',
@@ -38,7 +40,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'log',
         'manual_formula',
         'cyclical',
-        'frequency'
+        'frequency',
+        'standard_scaling'
     ]
     
     def __init__(
@@ -62,12 +65,16 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Learned state (fit-time)
         self._scaler: Optional[StandardScaler] = None
         self._kmeans: Optional[KMeans] = None
-
+        self._ohe: Optional[OneHotEncoder] = None
+        self._feature_scaler: Optional[StandardScaler] = None
+        
         # Learned stable dummy columns for study_method
         self._study_method_dummy_cols: Optional[List[str]] = None
 
         self._cluster_cols_fit_ = None
         self._cluster_fill_values_ = None
+        self._ohe_cols_ = None
+        self._scaling_cols_ = None
 
         invalid_strategies = set()
         
@@ -126,6 +133,39 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'frequency' in self.strategies:
             self._add_frequency_fit(df_new)
             
+        if 'one_hot_encoding' in self.strategies:
+            self._add_one_hot_encoding_fit(df_new)            
+        
+        # We run this last or near last to scale generated features too
+        if 'standard_scaling' in self.strategies:
+            # We need to temporarily apply transformations that create columns
+            # to know what columns exist for scaling.
+            # However, for simplicity here, we assume scaling handles existing numeric cols
+            # at the time of transform.
+            # Better approach: We calculate mean/std during the fit phase.
+            # To do that accurately, we must replicate the generation steps on df_new
+            # before fitting the scaler.
+            if 'drop_id' in self.strategies:
+                df_new = self._drop_ids(df_new)
+
+            if 'log' in self.strategies:
+                df_new = self._add_log(df_new)
+                
+            if 'polynomials' in self.strategies:
+                df_new = self._add_polynomials(df_new)
+                
+            if 'manual_formula' in self.strategies:
+                df_new = self._add_manual_formula(df_new)
+                
+            if 'cyclical' in self.strategies:
+                df_new = self._add_cyclical(df_new)
+
+            # Apply OHE transformation to df_new so we scale the OHE columns too if needed    
+            if 'one_hot_encoding' in self.strategies:
+                df_new = self._add_one_hot_encoding_transform(df_new)
+            
+            self._add_standard_scaling_fit(df_new)
+            
         self._is_fit = True
         return self
 
@@ -168,6 +208,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'frequency' in self.strategies:
             df_new = self._add_frequency_transform(df_new)
+
+        if 'one_hot_encoding' in self.strategies:
+            df_new = self._add_one_hot_encoding_transform(df_new)
+
+        if 'standard_scaling' in self.strategies:
+            df_new = self._add_standard_scaling_transform(df_new)
             
         return df_new
 
@@ -341,11 +387,23 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.verbose:
             print('  -> Adding manual formula of selected features...')
 
+        if 'course' in df.columns and 'study_hours' in df.columns:
+            if self.verbose:
+                print('  -> Adding effort_gap feature...')
+                
+            # Highlights "slacking" relative to peers in the same difficulty bracket.
+            df['course_max_study'] = df.groupby('course')['study_hours'].transform('max')
+            df['effort_gap'] = df['course_max_study'] - df['study_hours']
+            df.drop('course_max_study', inplace=True, errors='ignore')
+            
         # Return without doing anything if all of the necessary features aren't present
         needed_cols = ['sleep_quality', 'facility_rating', 'study_method', 'study_hours', 'class_attendance']
         for col in needed_cols:
             if col not in df.columns:
                 return df
+        
+        if self.verbose:
+            print('  -> Adding manual_formula feature...')
         
         LUT = {
             'sleep_quality': {'good': 5, 'average': 0, 'poor': -5},
@@ -613,13 +671,132 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             
         # Sine features for Study Hours (assuming 12-hour cycle logic from snippet)
         if 'study_hours' in df.columns:
-            df['_study_hours_sin'] = np.sin(2 * np.pi * df['study_hours'] / 12).astype('float32')
+            df['study_hours_sin'] = np.sin(2 * np.pi * df['study_hours'] / 12).astype('float32')
             
         # Sine features for Class Attendance
         if 'class_attendance' in df.columns:
-            df['_class_attendance_sin'] = np.sin(2 * np.pi * df['class_attendance'] / 12).astype('float32')
+            df['class_attendance_sin'] = np.sin(2 * np.pi * df['class_attendance'] / 12).astype('float32')
             
         return df
+
+    
+    def _add_one_hot_encoding_fit(self, df: pd.DataFrame) -> None:
+        """
+        Fit-time one hot encoding:
+          - A OneHotEncoder is created
+          - categorical features are identified and fit
+          - OneHotEncoder is stored
+        """
+        if self.verbose:
+            print('  -> One-Hot Encoding: fitting...')
+            
+        cat_cols = self.get_cat_features(df)
+        self._ohe_cols_ = cat_cols
+        
+        if not cat_cols:
+            return
+            
+        self._ohe = OneHotEncoder(sparse_output=False, handle_unknown='ignore', dtype=np.int8)
+        self._ohe.fit(df[cat_cols])
+
+        
+    def _add_one_hot_encoding_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Transform-time one hot encoding:
+          - Stored OneHotEncoder is used to encode categorical features
+          - Original categorical features are replaced with enccoded features. 
+        """
+        if self.verbose:
+            print('  -> One-Hot Encoding: transform...')
+            
+        if self._ohe is None or not self._ohe_cols_:
+            return df
+        
+        # Ensure cols exist
+        present = [c for c in self._ohe_cols_ if c in df.columns]
+        if len(present) != len(self._ohe_cols_):
+            return df
+
+        encoded_data = self._ohe.transform(df[self._ohe_cols_])
+        feature_names = self._ohe.get_feature_names_out(self._ohe_cols_)
+        
+        # Create DataFrame with proper index
+        encoded_df = pd.DataFrame(encoded_data, columns=feature_names, index=df.index)
+        
+        # Drop original cats and concat
+        df = df.drop(columns=self._ohe_cols_)
+        df = pd.concat([df, encoded_df], axis=1)
+        return df
+
+    def _add_standard_scaling_fit(self, df: pd.DataFrame) -> None:
+        """
+        Fit-time one standard scaling:
+          - numeric features are identified and fit
+          - A StandardScaler is created and stored
+          - StandardScaler is fit on numeric features
+        """
+        if self.verbose:
+            print('  -> Standard Scaling: fitting...')
+            
+        # Numeric columns only
+        num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        if self.target in num_cols:
+            num_cols.remove(self.target)
+            
+        self._scaling_cols_ = num_cols
+        
+        if not num_cols:
+            return
+        
+        self._feature_scaler = StandardScaler()
+        
+        # Handle NaNs before fitting scaler.
+        # Simple fill for scaling stability.
+        df_fill = df[num_cols].fillna(df[num_cols].mean())
+        self._feature_scaler.fit(df_fill)
+
+        
+    def _add_standard_scaling_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Transform-time standard scaling:
+          - Stored StandardScaler is used to transform numeric features
+          - Replace any NaNs with 0. 
+        """
+        if self.verbose: print('  -> Standard Scaling: transform...')
+        if self._feature_scaler is None:
+            return df
+        
+        valid_cols = [c for c in self._scaling_cols_ if c in df.columns]
+        if not valid_cols:
+            return df
+        
+        # Note: Scikit-learn scalers don't handle NaNs by default in older versions, 
+        # but modern ones propagate them. We fill NaNs to be safe for linear models.
+        # Using the same means learned in fit would be ideal, but simple fillna(0) after scaling
+        # (since mean is 0) works often.
+        # Here we assume df is filled or let scaler handle it.
+        df[valid_cols] = self._feature_scaler.transform(df[valid_cols])
+        # Linear models hate NaNs, so we fill any remaining with 0 (mean)
+        df[valid_cols] = df[valid_cols].fillna(0)
+        return df
+
+        
+    def get_cat_features(self, df: pd.DataFrame) -> List[str]:
+        cat_cols = []
+        for col in df.columns:
+            if df[col].dtype == 'object' or str(df[col].dtype).startswith("category"):
+                cat_cols.append(col)
+        # Discrete engineered
+        for c in ['class_attendance_class', 'sleep_hours_class', 'study_hours_class', 'cluster_label']:
+            if c in df.columns: cat_cols.append(c)
+            
+        seen = set()
+        out = []
+        for c in cat_cols:
+            if c not in seen:
+                out.append(c)
+                seen.add(c)
+        return out
 
     
     def get_cat_features(self, df: pd.DataFrame) -> List[str]:
