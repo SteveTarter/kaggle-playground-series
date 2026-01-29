@@ -9,8 +9,6 @@ class ModelVisualizer:
     Centralizes all visualization logic for Gradient Boosting models (XGBoost/CatBoost).
     """
     def __init__(self, palette='viridis', model_name=None):
-        print('In ModelVisualizer __init__...')
-        
         self.palette = palette
         self.model_name = model_name if model_name else "Model"
         plt.style.use('seaborn-v0_8-whitegrid') # Set a nice style

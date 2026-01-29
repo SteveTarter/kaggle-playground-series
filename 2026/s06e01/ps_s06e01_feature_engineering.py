@@ -75,7 +75,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         self._cluster_fill_values_ = None
         self._ohe_cols_ = None
         self._scaling_cols_ = None
-
+        self._course_max_map = None
+        
         invalid_strategies = set()
         
         # Validate and store only the requested strategies
@@ -134,8 +135,11 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             self._add_frequency_fit(df_new)
             
         if 'one_hot_encoding' in self.strategies:
-            self._add_one_hot_encoding_fit(df_new)            
-        
+            self._add_one_hot_encoding_fit(df_new)
+            
+        if 'manual_formula' in self.strategies:
+            self._course_max_map = df.groupby('course')['study_hours'].max().to_dict()
+            
         # We run this last or near last to scale generated features too
         if 'standard_scaling' in self.strategies:
             # We need to temporarily apply transformations that create columns
@@ -387,14 +391,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.verbose:
             print('  -> Adding manual formula of selected features...')
 
-        if 'course' in df.columns and 'study_hours' in df.columns:
-            if self.verbose:
-                print('  -> Adding effort_gap feature...')
-                
-            # Highlights "slacking" relative to peers in the same difficulty bracket.
-            df['course_max_study'] = df.groupby('course')['study_hours'].transform('max')
-            df['effort_gap'] = df['course_max_study'] - df['study_hours']
-            df.drop('course_max_study', inplace=True, errors='ignore')
+        if self._course_max_map is not None and 'course' in df.columns:
+            # Map the learned maxes. Fillna with global max or median if a course is unseen
+            global_max = max(self._course_max_map.values()) if self._course_max_map else 0
+            mapped_max = df['course'].map(self._course_max_map).fillna(global_max)
+
+            df['effort_gap'] = mapped_max - df['study_hours']
             
         # Return without doing anything if all of the necessary features aren't present
         needed_cols = ['sleep_quality', 'facility_rating', 'study_method', 'study_hours', 'class_attendance']
