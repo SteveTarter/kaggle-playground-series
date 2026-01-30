@@ -13,6 +13,7 @@ class ModelVisualizer:
         self.model_name = model_name if model_name else "Model"
         plt.style.use('seaborn-v0_8-whitegrid') # Set a nice style
 
+    
     def plot_learning_curves(self, eval_results, metric='rmse'):
         """
         Plots Train vs Val metrics over iterations.
@@ -171,6 +172,7 @@ class ModelVisualizer:
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.show()
 
+    
     def plot_residuals(self, y_true, y_preds):
         """
         Plots Residuals (True - Pred) vs Predicted values.
@@ -186,4 +188,71 @@ class ModelVisualizer:
         plt.xlabel('Predicted Values')
         plt.ylabel('Residuals (True - Pred)')
         plt.grid(True, linestyle='--', alpha=0.7)
+        plt.show()
+
+    
+    def plot_distribution_mismatch(self, y_true, y_preds):
+        """
+        Overlays the distribution of True values vs Predicted values.
+        Crucial for detecting if the model is 'regressing to the mean'.
+        """
+        plt.figure(figsize=(10, 6))
+        sns.kdeplot(y_true, label='True Values', fill=True, color='blue', alpha=0.3, warn_singular=False)
+        sns.kdeplot(y_preds, label='Predicted Values', fill=True, color='red', alpha=0.3, warn_singular=False)
+        plt.title(f"{self.model_name}: Distribution Mismatch")
+        plt.xlabel("Target Value")
+        plt.ylabel("Density")
+        plt.legend()
+        plt.show()
+
+    
+    def plot_error_bias(self, y_true, y_preds):
+        """
+        Plots Error vs True Value. 
+        Helps detect if the model fails specifically on high or low scores.
+        """
+        residuals = y_preds - y_true
+        plt.figure(figsize=(10, 6))
+        plt.scatter(y_true, residuals, alpha=0.5, color='teal', edgecolor='k')
+        plt.axhline(0, color='red', linestyle='--', lw=2)
+        plt.xlabel("True Values")
+        plt.ylabel("Prediction Error (Pred - True)")
+        plt.title(f"{self.model_name}: Error Bias (Systematic Failures)")
+        plt.grid(True, alpha=0.3)
+        plt.show()
+
+
+    def plot_training_heartbeat(self, history, title_suffix=""):
+        """
+        Plots Loss and Learning Rate side-by-side. 
+        Essential for checking Cosine Annealing convergence.
+        """
+        if not history: return
+
+        fig, ax1 = plt.figure(figsize=(12, 6)), plt.gca()
+        
+        # Plot Loss
+        ax1.plot(history['train_loss'], label='Train Loss', color='tab:blue', alpha=0.6)
+        if 'val_rmse' in history:
+            ax1.plot(history['val_rmse'], label='Val RMSE', color='tab:orange', linewidth=2)
+        
+        ax1.set_xlabel('Epochs')
+        ax1.set_ylabel('RMSE / Loss', color='tab:blue')
+        ax1.tick_params(axis='y', labelcolor='tab:blue')
+        ax1.grid(True, alpha=0.3)
+
+        # Plot LR on secondary axis
+        if 'lrs' in history:
+            ax2 = ax1.twinx()
+            ax2.plot(history['lrs'], label='Learning Rate', color='tab:red', linestyle='--', alpha=0.5)
+            ax2.set_ylabel('Learning Rate', color='tab:red')
+            ax2.tick_params(axis='y', labelcolor='tab:red')
+        
+        plt.title(f"{self.model_name} Training Heartbeat {title_suffix}")
+        
+        # Combined Legend
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = (ax2.get_legend_handles_labels()) if 'lrs' in history else ([], [])
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper center')
+        
         plt.show()
