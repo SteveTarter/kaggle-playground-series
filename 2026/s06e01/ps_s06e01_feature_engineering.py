@@ -27,7 +27,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
       - standard scaling (for linear models/NNs)
     Critical invariants:
       - Any columns created from categoricals must be stable between fit/transform.
-      - Any "learned" transformations (scaler/kmeans) must be fit only on training data.
+      - Any 'learned' transformations (scaler/kmeans) must be fit only on training data.
     """
     valid_strategies = [
         'drop_id',
@@ -128,7 +128,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     # ----------------------------
     def fit(self, df: pd.DataFrame = None) -> 'FeatureFactory':
         if self.verbose:
-            print("  -> Fitting DataFrame...")
+            print('  -> Fitting DataFrame...')
             
         df_new = df.copy()
 
@@ -203,7 +203,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             raise RuntimeError('FeatureFactory must be fit() before transform().')
 
         if self.verbose:
-            print(f"Applying FeatureFactory with strategies: {', '.join(self.strategies)}")
+            print(f'Applying FeatureFactory with strategies: {', '.join(self.strategies)}')
         
         df_new = df.copy()
             
@@ -268,7 +268,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         """
         cat = pd.cut(s, bins=bins, labels=labels, include_lowest=include_lowest)
         # cat.codes gives -1 for NaN
-        return cat.cat.codes.astype("int16")
+        return cat.cat.codes.astype('int16')
         
         
     @staticmethod
@@ -281,15 +281,15 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         """
         return (
             col.strip()
-               .replace(" ", "_")
-               .replace("-", "_")
+               .replace(' ', '_')
+               .replace('-', '_')
         )
 
     
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
         if self.verbose:
-            print("  -> Dropping the 'id' column...")
+            print('  -> Dropping the 'id' column...')
 
         if 'id' in df.columns:
             df = df.drop('id', axis=1)
@@ -452,7 +452,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         missing = [c for c in self._poly_cols_ if c not in df.columns]
         if missing:
              if self.verbose:
-                 print(f"Skipping polynomials, missing cols: {missing}")
+                 print(f'Skipping polynomials, missing cols: {missing}')
              return df
 
         X = df[self._poly_cols_].copy()
@@ -485,7 +485,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print(f'  updated list of columns to add:\n{new_cols}')
         
         # Optimization: Downcast types to save memory
-        poly_df_new = poly_df[new_cols].astype("float32")
+        poly_df_new = poly_df[new_cols].astype('float32')
         
         return pd.concat([df, poly_df_new], axis=1)
 
@@ -502,7 +502,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # 1. One-Hot Encoded columns (binary)
         # 2. Ordinal encodings (integers 0, 1, 2)
         # 3. Cyclical features (Sine/Cosine waves should not be distorted)
-        # 4. Sparse "Slope Dummies" (e.g. effort_self_study_hours) as they are mostly 0s
+        # 4. Sparse 'Slope Dummies' (e.g. effort_self_study_hours) as they are mostly 0s
         
         candidates = [
             # 1. Base Numerics
@@ -642,7 +642,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 # We use multiplication to highlight the compound effect.
                 df['total_engagement'] = df['study_hours'] * df['class_attendance']
                 
-                # "Autodidact Ratio". High study hours but LOW attendance.
+                # 'Autodidact Ratio'. High study hours but LOW attendance.
                 # We add a small epsilon (1e-5) to avoid division by zero.
                 df['autodidact_ratio'] = df['study_hours'] / (df['class_attendance'] + 1e-5)
 
@@ -653,21 +653,21 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 facility_map = {
                     'low': 0.8, 'medium': 1.0, 'high': 1.2
                 }
-                df['facility_weight'] = df.get('facility_rating').map(facility_map).astype("float32")
+                df['facility_weight'] = df.get('facility_rating').map(facility_map).astype('float32')
                 df['facility_weight'] = df['facility_weight'].fillna(1.0)
-                df['weighted_study_hours'] = df['study_hours'].astype("float32") * df['facility_weight']
+                df['weighted_study_hours'] = df['study_hours'].astype('float32') * df['facility_weight']
 
         if 'sleep_quality' in df.columns and 'sleep_hours' in df.columns:
             # Restoration Index (Num x Ordinal)
             # Logic: Sleep duration needs to be qualified by sleep quality.
             # We map the categorical quality to a numeric scale (Ordinal Encoding)
-            # and multiply to get a "Total Rest" volume.
+            # and multiply to get a 'Total Rest' volume.
             sleep_map = {
                 'poor': 1, 'average': 2, 'good': 3
             }
-            df['sleep_quality_num'] = df.get('sleep_quality').map(sleep_map).astype("float32")
+            df['sleep_quality_num'] = df.get('sleep_quality').map(sleep_map).astype('float32')
             df['sleep_quality_num'] = df['sleep_quality_num'].fillna(0.0)
-            df['restoration_index'] = df['sleep_hours'].astype("float32") * df['sleep_quality_num']
+            df['restoration_index'] = df['sleep_hours'].astype('float32') * df['sleep_quality_num']
 
         if 'study_hours' in df.columns and 'class_attendance' in df.columns:
             df['study_att'] = df['study_hours'] * df['class_attendance']
@@ -710,9 +710,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
             # Create interaction features
             for col in self._study_method_dummy_cols:
-                df[f"{col}_hours"] = (
-                    dummies[col].astype("float32") *
-                    df['study_hours'].astype("float32")
+                df[f'{col}_hours'] = (
+                    dummies[col].astype('float32') *
+                    df['study_hours'].astype('float32')
                 )
     
         return df
@@ -728,7 +728,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print('  -> Iteraction features: transform...')
 
         if self._is_fit is False:
-            raise RuntimeError("FeatureFactory.transform called before fit (study_method dummy columns not learned).")
+            raise RuntimeError('FeatureFactory.transform called before fit (study_method dummy columns not learned).')
 
         df = self._add_interactions_core(df)
 
@@ -754,9 +754,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             )
         
             for col in self._study_method_dummy_cols:
-                df[f"{col}_hours"] = (
-                    dummies[col].astype("float32") *
-                    df['study_hours'].astype("float32")
+                df[f'{col}_hours'] = (
+                    dummies[col].astype('float32') *
+                    df['study_hours'].astype('float32')
                 )
         
         return df
@@ -774,8 +774,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     
         if not cluster_cols_present:
             raise ValueError(
-                "Clustering requested but none of the clustering columns are present. "
-                f"Expected one of: {self.cluster_cols}"
+                'Clustering requested but none of the clustering columns are present. '
+                f'Expected one of: {self.cluster_cols}'
             )
     
         self._cluster_cols_fit_ = cluster_cols_present
@@ -803,19 +803,19 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print('  -> Clustering features: transform...')
             
         if self._scaler is None or self._kmeans is None or self._cluster_cols_fit_ is None:
-            raise RuntimeError("Clustering requested but FeatureFactory was not fit properly.")
+            raise RuntimeError('Clustering requested but FeatureFactory was not fit properly.')
 
         missing = [c for c in self._cluster_cols_fit_ if c not in df.columns]
         if missing:
             raise ValueError(
-                f"Missing clustering columns at transform-time: {missing}"
+                f'Missing clustering columns at transform-time: {missing}'
             )
 
         X_cluster = df[self.cluster_cols].copy()
         X_cluster = X_cluster.fillna(self._cluster_fill_values_)
 
         X_scaled = self._scaler.transform(X_cluster)
-        df['cluster_label'] = self._kmeans.predict(X_scaled).astype("int16")
+        df['cluster_label'] = self._kmeans.predict(X_scaled).astype('int16')
         
         return df
 
@@ -846,12 +846,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print('  -> Frequency features: fitting...')
 
         if not hasattr(self, '_freq_maps_'):
-            raise RuntimeError("Frequency requested but FeatureFactory was not fit properly.")
+            raise RuntimeError('Frequency requested but FeatureFactory was not fit properly.')
             
         for col, freq_map in self._freq_maps_.items():
             if col in df.columns:
                 # Map the saved counts. fillna(0) handles categories seen in Test but not Train.
-                df[f"{col}_freq"] = df[col].astype(str).map(freq_map).fillna(0).astype('int32')
+                df[f'{col}_freq'] = df[col].astype(str).map(freq_map).fillna(0).astype('int32')
                 
         return df
 
@@ -978,7 +978,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     def get_cat_features(self, df: pd.DataFrame) -> List[str]:
         cat_cols = []
         for col in df.columns:
-            if df[col].dtype == 'object' or str(df[col].dtype).startswith("category"):
+            if df[col].dtype == 'object' or str(df[col].dtype).startswith('category'):
                 cat_cols.append(col)
         # Discrete engineered
         for c in ['class_attendance_class', 'sleep_hours_class', 'study_hours_class', 'cluster_label']:
@@ -1003,7 +1003,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         cat_cols = []
 
         for col in df.columns:
-            if df[col].dtype == 'object' or str(df[col].dtype).startswith("category"):
+            if df[col].dtype == 'object' or str(df[col].dtype).startswith('category'):
                 cat_cols.append(col)
 
         # Explicit discrete engineered columns

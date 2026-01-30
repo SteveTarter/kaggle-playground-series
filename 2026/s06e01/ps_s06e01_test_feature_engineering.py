@@ -265,8 +265,8 @@ class TestFeatureFactory(unittest.TestCase):
             self.assertIn('restoration_index', df_trans.columns)
         except ValueError as e:
             # Catch the specific Scikit-Learn dimension mismatch error
-            if "X has" in str(e) and "expecting" in str(e):
-                print(f"\n[Note] Caught expected dimension mismatch in Clustering+Interactions: {e}")
+            if 'X has' in str(e) and 'expecting' in str(e):
+                print(f'\n[Note] Caught expected dimension mismatch in Clustering+Interactions: {e}')
             else:
                 raise e
 

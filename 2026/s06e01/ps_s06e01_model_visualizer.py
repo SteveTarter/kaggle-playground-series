@@ -10,7 +10,7 @@ class ModelVisualizer:
     """
     def __init__(self, palette='viridis', model_name=None):
         self.palette = palette
-        self.model_name = model_name if model_name else "Model"
+        self.model_name = model_name if model_name else 'Model'
         plt.style.use('seaborn-v0_8-whitegrid') # Set a nice style
 
     
@@ -49,7 +49,7 @@ class ModelVisualizer:
                 if len(keys) >= 2:
                     train_key, val_key = keys[0], keys[1]
                 else:
-                    print(f"Fold {i+1}: Could not detect standard keys. Found: {keys}")
+                    print(f'Fold {i+1}: Could not detect standard keys. Found: {keys}')
                     continue
                     
             # Helper to safely get metric
@@ -85,7 +85,7 @@ class ModelVisualizer:
         Aggregates and plots feature importance across multiple trained models.
         """
         if not models:
-            print("No models provided for feature importance.")
+            print('No models provided for feature importance.')
             return
 
         feature_importance = pd.DataFrame()
@@ -116,7 +116,7 @@ class ModelVisualizer:
                     imp_dict = model.get_booster().get_score(importance_type='gain')
                 
             except Exception as e:
-                print(f"Error extracting importance for model {i}: {e}")
+                print(f'Error extracting importance for model {i}: {e}')
                 continue
 
             fold_imp = pd.DataFrame({
@@ -199,9 +199,9 @@ class ModelVisualizer:
         plt.figure(figsize=(10, 6))
         sns.kdeplot(y_true, label='True Values', fill=True, color='blue', alpha=0.3, warn_singular=False)
         sns.kdeplot(y_preds, label='Predicted Values', fill=True, color='red', alpha=0.3, warn_singular=False)
-        plt.title(f"{self.model_name}: Distribution Mismatch")
-        plt.xlabel("Target Value")
-        plt.ylabel("Density")
+        plt.title(f'{self.model_name}: Distribution Mismatch')
+        plt.xlabel('Target Value')
+        plt.ylabel('Density')
         plt.legend()
         plt.show()
 
@@ -215,14 +215,14 @@ class ModelVisualizer:
         plt.figure(figsize=(10, 6))
         plt.scatter(y_true, residuals, alpha=0.5, color='teal', edgecolor='k')
         plt.axhline(0, color='red', linestyle='--', lw=2)
-        plt.xlabel("True Values")
-        plt.ylabel("Prediction Error (Pred - True)")
-        plt.title(f"{self.model_name}: Error Bias (Systematic Failures)")
+        plt.xlabel('True Values')
+        plt.ylabel('Prediction Error (Pred - True)')
+        plt.title(f'{self.model_name}: Error Bias (Systematic Failures)')
         plt.grid(True, alpha=0.3)
         plt.show()
 
 
-    def plot_training_heartbeat(self, history, title_suffix=""):
+    def plot_training_heartbeat(self, history, title_suffix=''):
         """
         Plots Loss and Learning Rate side-by-side. 
         Essential for checking Cosine Annealing convergence.
@@ -248,7 +248,7 @@ class ModelVisualizer:
             ax2.set_ylabel('Learning Rate', color='tab:red')
             ax2.tick_params(axis='y', labelcolor='tab:red')
         
-        plt.title(f"{self.model_name} Training Heartbeat {title_suffix}")
+        plt.title(f'{self.model_name} Training Heartbeat {title_suffix}')
         
         # Combined Legend
         lines1, labels1 = ax1.get_legend_handles_labels()
