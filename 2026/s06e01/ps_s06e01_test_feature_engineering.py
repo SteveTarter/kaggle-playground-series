@@ -29,6 +29,7 @@ class TestFeatureFactory(unittest.TestCase):
             'exam_score': [78.3, 46.7, 99.0, 63.9, 100.0, 70.1, 63.4, 76.8, 46.7, 58.2]
         }
         self.df = pd.DataFrame(data)
+        self.seed = 10301
 
     def test_init_validation(self):
         """Test that invalid strategies raise a ValueError."""
@@ -38,7 +39,8 @@ class TestFeatureFactory(unittest.TestCase):
         # Should not raise
         FeatureFactory(strategies=[
             'drop_id', 'binning', 'interactions', 'clustering', 
-            'polynomials', 'log', 'manual_formula', 'cyclical', 'frequency',
+            'polynomials', 'polynomial_features', 'gaussian_transform',
+            'log', 'manual_formula', 'cyclical', 'frequency',
             'one_hot_encoding', 'standard_scaling'
         ])
 
@@ -131,6 +133,65 @@ class TestFeatureFactory(unittest.TestCase):
         self.assertIn('sleep_hours_sq', df_trans.columns)
         self.assertAlmostEqual(df_trans.loc[0, 'sleep_hours_sq'], 4.9 * 4.9, places=8)
 
+    def test_polynomial_features(self):
+        """Test 'polynomial_features' strategy (sklearn implementation)."""
+        ff = FeatureFactory(strategies=['polynomial_features'], verbose=True)
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # Candidates for expansion in the class are: 
+        # ['age', 'study_hours', 'sleep_hours', 'class_attendance']
+        
+        # Check for squared terms (e.g. age^2)
+        # Note: Sklearn PolyFeatures names squared terms as 'col^2' (in recent versions)
+        self.assertIn('age^2', df_trans.columns)
+        self.assertEqual(df_trans.loc[0, 'age^2'], 21 * 21)
+
+        # Check for interactions (e.g. age study_hours)
+        # Note: Sklearn separates interaction features with a space
+        self.assertIn('age_study_hours', df_trans.columns)
+        expected_interaction = 21 * 7.91
+        self.assertAlmostEqual(df_trans.loc[0, 'age_study_hours'], expected_interaction, places=4)
+
+        # Check that original columns are NOT duplicated 
+        # (The implementation logic removes columns that already exist)
+        # 'age' should exist (from original), but not be duplicated.
+        self.assertEqual(list(df_trans.columns).count('age'), 1)
+        
+    def test_gaussian_transform(self):
+        """Test 'gaussian_transform' applies QuantileTransformer."""
+        # Setup
+        ff = FeatureFactory(strategies=['gaussian_transform'], seed=self.seed, verbose=True)
+        
+        # Inject a known outlier to test robustness/transformation
+        # (Copy df so we don't affect other tests)
+        test_df = self.df.copy()
+        test_df.loc[0, 'study_hours'] = 100.0 # Extreme outlier
+
+        # Fit and Transform
+        ff.fit(test_df)
+        df_trans = ff.transform(test_df)
+
+        # Verify Numeric Transformation
+        # The outlier (100.0) should be squashed.
+        # In a standard normal distribution, values rarely exceed +/- 5.
+        # Without Gaussian transform, StandardScaler would keep it far from the mean.
+        transformed_outlier = df_trans.loc[0, 'study_hours']
+        
+        # Check that values changed
+        self.assertNotEqual(transformed_outlier, 100.0)
+        
+        # Check bounds (QuantileTransformer with normal output stays within reasonable sigma bounds)
+        self.assertTrue(-5.5 < transformed_outlier < 5.5)
+
+        # 5. Verify Categorical Ignorance
+        # 'gender' is not in the candidate list for gaussian transform, so it should be untouched.
+        self.assertEqual(df_trans.loc[0, 'gender'], test_df.loc[0, 'gender'])
+
+        # 6. Statistical Check (Approximate)
+        # The mean of the transformed column should be closer to 0 than the original
+        self.assertAlmostEqual(df_trans['study_hours'].mean(), 0.0, delta=1.0)   
+        
     def test_manual_formula(self):
         ff = FeatureFactory(strategies=['manual_formula'], verbose=True)
         ff.fit(self.df)
@@ -178,7 +239,7 @@ class TestFeatureFactory(unittest.TestCase):
 
     def test_clustering_standalone(self):
         """Test 'clustering' on its own (uses raw study_hours and class_attendance)."""
-        ff = FeatureFactory(strategies=['clustering'], seed=42, verbose=True)
+        ff = FeatureFactory(strategies=['clustering'], seed=self.seed, verbose=True)
         ff.fit(self.df) # Should fit KMeans on study_hours/attendance
         df_trans = ff.transform(self.df)
         
@@ -194,7 +255,7 @@ class TestFeatureFactory(unittest.TestCase):
         while 'transform()' creates it and then tries to predict using it.
         This usually causes a dimension mismatch error.
         """
-        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=42, verbose=True)
+        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=self.seed, verbose=True)
         
         try:
             ff.fit(self.df)

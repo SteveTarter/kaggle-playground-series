@@ -5,7 +5,7 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.preprocessing import StandardScaler, OneHotEncoder, PolynomialFeatures, QuantileTransformer
 from sklearn.cluster import KMeans
 
 from dataclasses import dataclass
@@ -37,6 +37,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'interactions',
         'clustering',
         'polynomials',
+        'polynomial_features',
+        'gaussian_transform',
         'log',
         'manual_formula',
         'cyclical',
@@ -67,6 +69,16 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         self._kmeans: Optional[KMeans] = None
         self._ohe: Optional[OneHotEncoder] = None
         self._feature_scaler: Optional[StandardScaler] = None
+        
+        # Polynomial state
+        self._poly: Optional[PolynomialFeatures] = None
+        self._poly_cols_: Optional[List[str]] = None
+        self._poly_fill_values_: Optional[pd.Series] = None
+        
+        # Gaussian state
+        self._gaussian: Optional[QuantileTransformer] = None
+        self._gaussian_cols_: Optional[List[str]] = None
+        self._gaussian_fill_values_: Optional[pd.Series] = None
         
         # Learned stable dummy columns for study_method
         self._study_method_dummy_cols: Optional[List[str]] = None
@@ -133,12 +145,21 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'frequency' in self.strategies:
             self._add_frequency_fit(df_new)
+
+        if 'polynomial_features' in self.strategies:
+            self._add_polynomial_features_fit(df_new)
             
         if 'one_hot_encoding' in self.strategies:
             self._add_one_hot_encoding_fit(df_new)
             
         if 'manual_formula' in self.strategies:
             self._course_max_map = df.groupby('course')['study_hours'].max().to_dict()
+
+        if 'gaussian_transform' in self.strategies:
+            # We must ensure the columns exist before fitting
+            # (If you generate columns in fit, ensure they are generated before this line)
+            df_temp = df_new.copy() # Snapshot current state
+            self._add_gaussian_transform_fit(df_temp)
             
         # We run this last or near last to scale generated features too
         if 'standard_scaling' in self.strategies:
@@ -157,6 +178,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 
             if 'polynomials' in self.strategies:
                 df_new = self._add_polynomials(df_new)
+                
+            if 'polynomial_features' in self.strategies:
+                self._add_polynomial_features_fit(df_new)
                 
             if 'manual_formula' in self.strategies:
                 df_new = self._add_manual_formula(df_new)
@@ -197,6 +221,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'polynomials' in self.strategies:
             df_new = self._add_polynomials(df_new)
+        
+        if 'polynomial_features' in self.strategies:
+            df_new = self._add_polynomial_features_transform(df_new) 
             
         if 'interactions' in self.strategies:
             df_new = self._add_interactions_transform(df_new)
@@ -216,6 +243,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'one_hot_encoding' in self.strategies:
             df_new = self._add_one_hot_encoding_transform(df_new)
 
+        if 'gaussian_transform' in self.strategies:
+            df_new = self._add_gaussian_transform_transform(df_new)
+        
         if 'standard_scaling' in self.strategies:
             df_new = self._add_standard_scaling_transform(df_new)
             
@@ -242,9 +272,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         
     @staticmethod
-    def _normalize_dummy_name(col: str) -> str:
+    def _normalize_name(col: str) -> str:
         """
-        Normalize dummy column names so they are stable and model-safe.
+        Normalize column names so they are stable and model-safe.
         Example:
             'effort_self-study' -> 'effort_self_study'
             'effort_group study' -> 'effort_group_study'
@@ -383,6 +413,168 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         return df
 
 
+    def _add_polynomial_features_fit(self, df: pd.DataFrame) -> None:
+        """
+        Fit sklearn PolynomialFeatures on selected numeric columns.
+        """
+        if self.verbose:
+            print('  -> Polynomial Features (sklearn): fitting...')
+
+        # Select core numeric columns suitable for interaction/poly expansion
+        # We avoid categorical-like numerics (like cluster_label) or targets
+        candidates = ['age', 'study_hours', 'sleep_hours', 'class_attendance']
+        self._poly_cols_ = [c for c in candidates if c in df.columns]
+        
+        if not self._poly_cols_:
+            return
+
+        X = df[self._poly_cols_].copy()
+        
+        # Learn median for filling NaNs (PolynomialFeatures does not support NaN)
+        self._poly_fill_values_ = X.median(numeric_only=True)
+        X = X.fillna(self._poly_fill_values_)
+        
+        # degree=2, interaction_only=False (creates squares + interactions)
+        self._poly = PolynomialFeatures(degree=2, include_bias=False)
+        self._poly.fit(X)
+
+    def _add_polynomial_features_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply learned polynomials.
+        """
+        if self.verbose:
+            print('  -> Polynomial Features (sklearn): transform...')
+            
+        if self._poly is None or not self._poly_cols_:
+            return df
+            
+        # Ensure required columns exist
+        missing = [c for c in self._poly_cols_ if c not in df.columns]
+        if missing:
+             if self.verbose:
+                 print(f"Skipping polynomials, missing cols: {missing}")
+             return df
+
+        X = df[self._poly_cols_].copy()
+        X = X.fillna(self._poly_fill_values_)
+        
+        poly_data = self._poly.transform(X)
+        
+        # Get feature names compatible with sklearn versions
+        if hasattr(self._poly, 'get_feature_names_out'):
+            names = self._poly.get_feature_names_out(self._poly_cols_)
+        else:
+            names = self._poly.get_feature_names(self._poly_cols_)
+            
+        if self.verbose:
+            print(f'  initial list of columns to add:\n{names}')
+            
+        poly_df = pd.DataFrame(poly_data, columns=names, index=df.index)
+
+        # Normalize added column names to ensure there are no enbedded spaces
+        poly_df = poly_df.rename(
+            columns={col: self._normalize_name(col) for col in poly_df.columns}
+        )
+        names = poly_df.columns
+        
+        # PolynomialFeatures returns the original columns (x) along with new ones (x^2).
+        # We only want to concatenate the NEW features to avoid duplicates.
+        new_cols = [c for c in names if c not in df.columns]
+
+        if self.verbose:
+            print(f'  updated list of columns to add:\n{new_cols}')
+        
+        # Optimization: Downcast types to save memory
+        poly_df_new = poly_df[new_cols].astype("float32")
+        
+        return pd.concat([df, poly_df_new], axis=1)
+
+    
+    def _add_gaussian_transform_fit(self, df: pd.DataFrame) -> None:
+        """
+        Fit QuantileTransformer to force numeric features into a Normal Distribution.
+        """
+        if self.verbose:
+            print('  -> Gaussian Transform (Quantile): fitting...')
+
+        # Apply to continuous numerics. 
+        # Generally AVOID:
+        # 1. One-Hot Encoded columns (binary)
+        # 2. Ordinal encodings (integers 0, 1, 2)
+        # 3. Cyclical features (Sine/Cosine waves should not be distorted)
+        # 4. Sparse "Slope Dummies" (e.g. effort_self_study_hours) as they are mostly 0s
+        
+        candidates = [
+            # 1. Base Numerics
+            'age', 'study_hours', 'sleep_hours', 'class_attendance',
+            
+            # 2. Engineered Ratios & Formulas
+            'manual_formula', 'effort_gap',
+            'weighted_study_hours', 'restoration_index',
+            'study_to_sleep_ratio', 'attendance_to_study_ratio',
+            'autodidact_ratio', 'total_engagement', 'study_att',
+            
+            # 3. Polynomial Interactions (Continuous * Continuous)
+            'age_study_hours', 'age_sleep_hours', 'age_class_attendance',
+            'study_hours_sleep_hours', 'study_hours_class_attendance',
+            'sleep_hours_class_attendance',
+            
+            # 4. Polynomial Squares (optional, but helps normalize the squared distribution)
+            'age^2', 'study_hours^2', 'class_attendance^2', 'sleep_hours^2'
+        ]
+        
+        # Only use columns that actually exist in the dataframe
+        self._gaussian_cols_ = [c for c in candidates if c in df.columns]
+        
+        if not self._gaussian_cols_:
+            return
+
+        X = df[self._gaussian_cols_].copy()
+        
+        # Fill NaNs with median to allow fitting
+        self._gaussian_fill_values_ = X.median(numeric_only=True)
+        X = X.fillna(self._gaussian_fill_values_)
+        
+        # output_distribution='normal' creates the Bell Curve
+        self._gaussian = QuantileTransformer(
+            output_distribution='normal', 
+            n_quantiles=min(len(df), 1000), # Safety for small datasets
+            random_state=self.seed
+        )
+        self._gaussian.fit(X)
+
+    def _add_gaussian_transform_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply learned Gaussian transformation.
+        """
+        if self.verbose:
+            print('  -> Gaussian Transform (Quantile): transform...')
+            
+        if self._gaussian is None or not self._gaussian_cols_:
+            return df
+            
+        # Ensure cols exist
+        valid_cols = [c for c in self._gaussian_cols_ if c in df.columns]
+        if not valid_cols:
+            return df
+
+        if self.verbose:
+            print(f'Applying gaussian transformation to {valid_cols}')
+            
+        X = df[valid_cols].copy()
+        X = X.fillna(self._gaussian_fill_values_)
+        
+        # Transform returns a numpy array
+        X_trans = self._gaussian.transform(X)
+        
+        # Update the dataframe in place (replace original skewed values with normal ones)
+        # OR create new columns if you prefer to keep both.
+        # For Ridge, replacing is usually better to remove the skew.
+        df[valid_cols] = X_trans
+        
+        return df
+    
+        
     def _add_manual_formula(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         This feature was discussed here: https://www.kaggle.com/competitions/playground-series-s6e1/discussion/666695
@@ -507,7 +699,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
             # Normalize dummy column names ONCE and store them
             rename_map = {
-                col: self._normalize_dummy_name(col)
+                col: self._normalize_name(col)
                 for col in raw_dummies.columns
             }
         
@@ -552,7 +744,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
             # Apply the SAME normalization
             raw_dummies = raw_dummies.rename(
-                columns={col: self._normalize_dummy_name(col) for col in raw_dummies.columns}
+                columns={col: self._normalize_name(col) for col in raw_dummies.columns}
             )
         
             # Enforce stable column set and order
