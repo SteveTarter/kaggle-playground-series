@@ -29,17 +29,20 @@ class TestFeatureFactory(unittest.TestCase):
             'exam_score': [78.3, 46.7, 99.0, 63.9, 100.0, 70.1, 63.4, 76.8, 46.7, 58.2]
         }
         self.df = pd.DataFrame(data)
+        self.seed = 10301
 
     def test_init_validation(self):
         """Test that invalid strategies raise a ValueError."""
         with self.assertRaises(ValueError):
             FeatureFactory(strategies=['invalid_strategy'])
-        
+
         # Should not raise
-        try:
-            FeatureFactory(strategies=['drop_id', 'binning'])
-        except ValueError:
-            self.fail("FeatureFactory raised ValueError on valid strategies")
+        FeatureFactory(strategies=[
+            'drop_id', 'binning', 'interactions', 'clustering', 
+            'polynomials', 'polynomial_features', 'gaussian_transform',
+            'log', 'manual_formula', 'cyclical', 'frequency',
+            'one_hot_encoding', 'standard_scaling'
+        ])
 
     def test_drop_id(self):
         """Test 'drop_id' strategy removes id and target columns."""
@@ -96,6 +99,117 @@ class TestFeatureFactory(unittest.TestCase):
         self.assertIn('study_hours_class', df_trans.columns)
         self.assertEqual(df_trans.loc[0, 'study_hours_class'], 2)
 
+    def test_log(self):
+        ff = FeatureFactory(strategies=['log'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('log_age', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_age'], np.log1p(21), places=8)
+
+        self.assertIn('log_study_hours', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_study_hours'], np.log1p(7.91), places=8)
+
+        self.assertIn('log_class_attendance', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_class_attendance'], np.log1p(98.8), places=8)
+
+        self.assertIn('log_sleep_hours', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'log_sleep_hours'], np.log1p(4.9), places=8)
+
+    def test_polynomials(self):
+        ff = FeatureFactory(strategies=['polynomials'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('age_sq', df_trans.columns)
+        self.assertEqual(df_trans.loc[0, 'age_sq'], 21 * 21)
+
+        self.assertIn('study_hours_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'study_hours_sq'], 7.91 * 7.91, places=8)
+
+        self.assertIn('class_attendance_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'class_attendance_sq'], 98.8 * 98.8, places=8)
+
+        self.assertIn('sleep_hours_sq', df_trans.columns)
+        self.assertAlmostEqual(df_trans.loc[0, 'sleep_hours_sq'], 4.9 * 4.9, places=8)
+
+    def test_polynomial_features(self):
+        """Test 'polynomial_features' strategy (sklearn implementation)."""
+        ff = FeatureFactory(strategies=['polynomial_features'], verbose=True)
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # Candidates for expansion in the class are: 
+        # ['age', 'study_hours', 'sleep_hours', 'class_attendance']
+        
+        # Check for squared terms (e.g. age^2)
+        # Note: Sklearn PolyFeatures names squared terms as 'col^2' (in recent versions)
+        self.assertIn('age^2', df_trans.columns)
+        self.assertEqual(df_trans.loc[0, 'age^2'], 21 * 21)
+
+        # Check for interactions (e.g. age study_hours)
+        # Note: Sklearn separates interaction features with a space
+        self.assertIn('age_study_hours', df_trans.columns)
+        expected_interaction = 21 * 7.91
+        self.assertAlmostEqual(df_trans.loc[0, 'age_study_hours'], expected_interaction, places=4)
+
+        # Check that original columns are NOT duplicated 
+        # (The implementation logic removes columns that already exist)
+        # 'age' should exist (from original), but not be duplicated.
+        self.assertEqual(list(df_trans.columns).count('age'), 1)
+        
+    def test_gaussian_transform(self):
+        """Test 'gaussian_transform' applies QuantileTransformer."""
+        # Setup
+        ff = FeatureFactory(strategies=['gaussian_transform'], seed=self.seed, verbose=True)
+        
+        # Inject a known outlier to test robustness/transformation
+        # (Copy df so we don't affect other tests)
+        test_df = self.df.copy()
+        test_df.loc[0, 'study_hours'] = 100.0 # Extreme outlier
+
+        # Fit and Transform
+        ff.fit(test_df)
+        df_trans = ff.transform(test_df)
+
+        # Verify Numeric Transformation
+        # The outlier (100.0) should be squashed.
+        # In a standard normal distribution, values rarely exceed +/- 5.
+        # Without Gaussian transform, StandardScaler would keep it far from the mean.
+        transformed_outlier = df_trans.loc[0, 'study_hours']
+        
+        # Check that values changed
+        self.assertNotEqual(transformed_outlier, 100.0)
+        
+        # Check bounds (QuantileTransformer with normal output stays within reasonable sigma bounds)
+        self.assertTrue(-5.5 < transformed_outlier < 5.5)
+
+        # 5. Verify Categorical Ignorance
+        # 'gender' is not in the candidate list for gaussian transform, so it should be untouched.
+        self.assertEqual(df_trans.loc[0, 'gender'], test_df.loc[0, 'gender'])
+
+        # 6. Statistical Check (Approximate)
+        # The mean of the transformed column should be closer to 0 than the original
+        self.assertAlmostEqual(df_trans['study_hours'].mean(), 0.0, delta=1.0)   
+        
+    def test_manual_formula(self):
+        ff = FeatureFactory(strategies=['manual_formula'], verbose=True)
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('manual_formula', df_trans.columns)
+
+        # Row 0:
+        # 6*study_hours + 0.35*attendance + 1.5*sleep_hours
+        # + sleep_quality(avg=0) + study_method(online videos=1) + facility(low=-4)
+        expected = (
+            6.0 * 7.91 +
+            0.35 * 98.8 +
+            1.5 * 4.9 +
+            0 + 1 + (-4)
+        )
+        self.assertAlmostEqual(df_trans.loc[0, 'manual_formula'], expected, places=5)
+
     def test_interactions(self):
         """Test 'interactions' creates combined features."""
         ff = FeatureFactory(strategies=['interactions'])
@@ -125,7 +239,7 @@ class TestFeatureFactory(unittest.TestCase):
 
     def test_clustering_standalone(self):
         """Test 'clustering' on its own (uses raw study_hours and class_attendance)."""
-        ff = FeatureFactory(strategies=['clustering'], seed=42, verbose=True)
+        ff = FeatureFactory(strategies=['clustering'], seed=self.seed, verbose=True)
         ff.fit(self.df) # Should fit KMeans on study_hours/attendance
         df_trans = ff.transform(self.df)
         
@@ -141,7 +255,7 @@ class TestFeatureFactory(unittest.TestCase):
         while 'transform()' creates it and then tries to predict using it.
         This usually causes a dimension mismatch error.
         """
-        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=42, verbose=True)
+        ff = FeatureFactory(strategies=['interactions', 'clustering'], seed=self.seed, verbose=True)
         
         try:
             ff.fit(self.df)
@@ -151,10 +265,127 @@ class TestFeatureFactory(unittest.TestCase):
             self.assertIn('restoration_index', df_trans.columns)
         except ValueError as e:
             # Catch the specific Scikit-Learn dimension mismatch error
-            if "X has" in str(e) and "expecting" in str(e):
-                print(f"\n[Note] Caught expected dimension mismatch in Clustering+Interactions: {e}")
+            if 'X has' in str(e) and 'expecting' in str(e):
+                print(f'\n[Note] Caught expected dimension mismatch in Clustering+Interactions: {e}')
             else:
                 raise e
 
+    def test_cyclical(self):
+        """Test 'cyclical' strategy creates sine features."""
+        ff = FeatureFactory(strategies=['cyclical'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('study_hours_sin', df_trans.columns)
+        self.assertIn('class_attendance_sin', df_trans.columns)
+
+        # Verification
+        # Row 0: study_hours = 7.91
+        expected_study = np.sin(2 * np.pi * 7.91 / 12).astype('float32')
+        self.assertAlmostEqual(df_trans.loc[0, 'study_hours_sin'], expected_study, places=4)
+
+        # Row 0: class_attendance = 98.8
+        expected_attendance = np.sin(2 * np.pi * 98.8 / 12).astype('float32')
+        self.assertAlmostEqual(df_trans.loc[0, 'class_attendance_sin'], expected_attendance, places=4)
+        
+    def test_frequency(self):
+        """Test 'frequency' strategy maps counts."""
+        ff = FeatureFactory(strategies=['frequency'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # In self.df['gender']:
+        # female: rows 0, 2, 7 = 3
+        # other: rows 1, 8 = 2
+        # male: rows 3, 4, 5, 6, 9 = 5
+        self.assertIn('gender_freq', df_trans.columns)
+
+        # Row 0 is 'female', freq should be 3
+        self.assertEqual(df_trans.loc[0, 'gender_freq'], 3)
+        # Row 3 is 'male', freq should be 5
+        self.assertEqual(df_trans.loc[3, 'gender_freq'], 5)
+
+        # Test Leakage Prevention / Unseen Categories:
+        # Create a new dataframe to act as 'test' set with an unseen gender 'alien'
+        new_data = pd.DataFrame({'gender': ['alien'], 'id': [99]})
+        
+        # Transform should use the counts learned from fit() (where 'alien' was not present)
+        # So 'alien' should get count 0
+        df_new_trans = ff.transform(new_data)
+        self.assertIn('gender_freq', df_new_trans.columns)
+        self.assertEqual(df_new_trans.loc[0, 'gender_freq'], 0)
+        
+    def test_one_hot_encoding(self):
+        """Test 'one_hot_encoding' converts nominal cats to binaries."""
+        ff = FeatureFactory(strategies=['one_hot_encoding'])
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # Check original columns are gone
+        self.assertNotIn('gender', df_trans.columns)
+        self.assertNotIn('course', df_trans.columns)
+
+        # Check new columns exist (sklearn output names)
+        # e.g., gender_female, gender_male, gender_other
+        self.assertIn('gender_female', df_trans.columns)
+        self.assertIn('gender_male', df_trans.columns)
+        self.assertIn('course_b.sc', df_trans.columns)
+
+        # Check value mapping
+        # Row 0 is 'female'
+        self.assertEqual(df_trans.loc[0, 'gender_female'], 1.0)
+        self.assertEqual(df_trans.loc[0, 'gender_male'], 0.0)
+
+        # Check handle_unknown='ignore'
+        # Pass a df with a brand new category. It should result in all 0s for that feature group.
+        new_data = pd.DataFrame(self.df.iloc[0:1].to_dict()) # Clone row 0
+        new_data.loc[0, 'gender'] = 'alien_species' # Unknown category
+        
+        df_new_trans = ff.transform(new_data)
+        self.assertEqual(df_new_trans.loc[0, 'gender_female'], 0.0)
+        self.assertEqual(df_new_trans.loc[0, 'gender_male'], 0.0)
+
+    def test_standard_scaling(self):
+        """Test 'standard_scaling' centers numeric data around 0."""
+        ff = FeatureFactory(strategies=['standard_scaling'], target='exam_score')
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # Check scaling logic on a feature
+        # Note: Sklearn uses biased estimator (divide by N), pandas uses unbiased (N-1)
+        # We just check that transformation happened and mean is approx 0.
+        mean_study = df_trans['study_hours'].mean()
+        self.assertAlmostEqual(mean_study, 0.0, places=5)
+        
+        # Ensure values actually changed
+        self.assertNotEqual(df_trans.loc[0, 'study_hours'], self.df.loc[0, 'study_hours'])
+
+        # Check target 'exam_score' was NOT scaled
+        # Row 0 exam_score is 78.3
+        self.assertEqual(df_trans.loc[0, 'exam_score'], 78.3)
+
+    def test_linear_pipeline_combo(self):
+        """Test the combination of OHE and Scaling (Ridge pipeline)."""
+        # This confirms that OHE columns created during the process are subsequently scaled.
+        strategies = ['one_hot_encoding', 'standard_scaling']
+        ff = FeatureFactory(strategies=strategies, target='exam_score')
+        
+        df_trans = ff.fit_transform(self.df)
+        
+        # Check OHE column presence
+        self.assertIn('gender_male', df_trans.columns)
+        
+        # Check Scaling on OHE column
+        # An OHE column usually has values 0 or 1. 
+        # After scaling, they should be floats (centered around 0).
+        val_0 = df_trans.loc[0, 'gender_male']
+        
+        # Should NOT be exactly 0.0 or 1.0 if scaling worked
+        self.assertNotEqual(val_0, 0.0)
+        self.assertNotEqual(val_0, 1.0)
+        
+        # Check Scaling on standard numeric
+        self.assertAlmostEqual(df_trans['age'].mean(), 0.0, places=5)
+        
 if __name__ == '__main__':
     unittest.main()

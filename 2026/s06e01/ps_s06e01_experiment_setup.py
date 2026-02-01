@@ -41,7 +41,7 @@ class ExperimentSetup:
         np.random.seed(self.seed)
         # tf.random.set_seed(seed) # Uncomment before using TensorFlow
         # torch.manual_seed(seed)  # Uncomment before using PyTorch
-        print(f"Random seed set to: {self.seed}")
+        print(f'Random seed set to: {self.seed}')
         
         return self.seed
 
@@ -60,7 +60,7 @@ class ExperimentSetup:
         warnings.filterwarnings('ignore')
         # Specifically suppress the annoying XGBoost warning if needed
         warnings.filterwarnings('ignore', message='.*Falling back to prediction using DMatrix.*')
-        print("Warnings suppressed.")
+        print('Warnings suppressed.')
 
     
     def read_training_dataset(self) -> pd.DataFrame:

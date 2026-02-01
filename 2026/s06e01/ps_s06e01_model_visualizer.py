@@ -10,9 +10,10 @@ class ModelVisualizer:
     """
     def __init__(self, palette='viridis', model_name=None):
         self.palette = palette
-        self.model_name = model_name if model_name else "Model"
+        self.model_name = model_name if model_name else 'Model'
         plt.style.use('seaborn-v0_8-whitegrid') # Set a nice style
 
+    
     def plot_learning_curves(self, eval_results, metric='rmse'):
         """
         Plots Train vs Val metrics over iterations.
@@ -48,7 +49,7 @@ class ModelVisualizer:
                 if len(keys) >= 2:
                     train_key, val_key = keys[0], keys[1]
                 else:
-                    print(f"Fold {i+1}: Could not detect standard keys. Found: {keys}")
+                    print(f'Fold {i+1}: Could not detect standard keys. Found: {keys}')
                     continue
                     
             # Helper to safely get metric
@@ -84,7 +85,7 @@ class ModelVisualizer:
         Aggregates and plots feature importance across multiple trained models.
         """
         if not models:
-            print("No models provided for feature importance.")
+            print('No models provided for feature importance.')
             return
 
         feature_importance = pd.DataFrame()
@@ -115,7 +116,7 @@ class ModelVisualizer:
                     imp_dict = model.get_booster().get_score(importance_type='gain')
                 
             except Exception as e:
-                print(f"Error extracting importance for model {i}: {e}")
+                print(f'Error extracting importance for model {i}: {e}')
                 continue
 
             fold_imp = pd.DataFrame({
@@ -131,7 +132,16 @@ class ModelVisualizer:
         avg_imp = feature_importance.groupby('Feature')['Importance'].mean().sort_values(ascending=False).head(top_n)
 
         plt.figure(figsize=(10, len(avg_imp) * 0.4))
-        sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
+        
+        ax = sns.barplot(x=avg_imp.values, y=avg_imp.index, palette=self.palette)
+
+        if show_values:
+            for container in ax.containers:
+                ax.bar_label(container, fmt='%.2f', padding=3, fontsize=10)
+
+            xmax = ax.get_xlim()[1]
+            ax.set_xlim(0, xmax * 1.15)
+            
         plt.title(f'{self.model_name} Top {top_n} Feature Importances (Average)')
         plt.xlabel('Importance')
         plt.show()
@@ -162,6 +172,7 @@ class ModelVisualizer:
         plt.grid(True, linestyle='--', alpha=0.7)
         plt.show()
 
+    
     def plot_residuals(self, y_true, y_preds):
         """
         Plots Residuals (True - Pred) vs Predicted values.
@@ -177,4 +188,71 @@ class ModelVisualizer:
         plt.xlabel('Predicted Values')
         plt.ylabel('Residuals (True - Pred)')
         plt.grid(True, linestyle='--', alpha=0.7)
+        plt.show()
+
+    
+    def plot_distribution_mismatch(self, y_true, y_preds):
+        """
+        Overlays the distribution of True values vs Predicted values.
+        Crucial for detecting if the model is 'regressing to the mean'.
+        """
+        plt.figure(figsize=(10, 6))
+        sns.kdeplot(y_true, label='True Values', fill=True, color='blue', alpha=0.3, warn_singular=False)
+        sns.kdeplot(y_preds, label='Predicted Values', fill=True, color='red', alpha=0.3, warn_singular=False)
+        plt.title(f'{self.model_name}: Distribution Mismatch')
+        plt.xlabel('Target Value')
+        plt.ylabel('Density')
+        plt.legend()
+        plt.show()
+
+    
+    def plot_error_bias(self, y_true, y_preds):
+        """
+        Plots Error vs True Value. 
+        Helps detect if the model fails specifically on high or low scores.
+        """
+        residuals = y_preds - y_true
+        plt.figure(figsize=(10, 6))
+        plt.scatter(y_true, residuals, alpha=0.5, color='teal', edgecolor='k')
+        plt.axhline(0, color='red', linestyle='--', lw=2)
+        plt.xlabel('True Values')
+        plt.ylabel('Prediction Error (Pred - True)')
+        plt.title(f'{self.model_name}: Error Bias (Systematic Failures)')
+        plt.grid(True, alpha=0.3)
+        plt.show()
+
+
+    def plot_training_heartbeat(self, history, title_suffix=''):
+        """
+        Plots Loss and Learning Rate side-by-side. 
+        Essential for checking Cosine Annealing convergence.
+        """
+        if not history: return
+
+        fig, ax1 = plt.figure(figsize=(12, 6)), plt.gca()
+        
+        # Plot Loss
+        ax1.plot(history['train_loss'], label='Train Loss', color='tab:blue', alpha=0.6)
+        if 'val_rmse' in history:
+            ax1.plot(history['val_rmse'], label='Val RMSE', color='tab:orange', linewidth=2)
+        
+        ax1.set_xlabel('Epochs')
+        ax1.set_ylabel('RMSE / Loss', color='tab:blue')
+        ax1.tick_params(axis='y', labelcolor='tab:blue')
+        ax1.grid(True, alpha=0.3)
+
+        # Plot LR on secondary axis
+        if 'lrs' in history:
+            ax2 = ax1.twinx()
+            ax2.plot(history['lrs'], label='Learning Rate', color='tab:red', linestyle='--', alpha=0.5)
+            ax2.set_ylabel('Learning Rate', color='tab:red')
+            ax2.tick_params(axis='y', labelcolor='tab:red')
+        
+        plt.title(f'{self.model_name} Training Heartbeat {title_suffix}')
+        
+        # Combined Legend
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = (ax2.get_legend_handles_labels()) if 'lrs' in history else ([], [])
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper center')
+        
         plt.show()
