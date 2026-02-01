@@ -203,7 +203,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             raise RuntimeError('FeatureFactory must be fit() before transform().')
 
         if self.verbose:
-            print(f'Applying FeatureFactory with strategies: {', '.join(self.strategies)}')
+            print(f'Applying FeatureFactory with strategies: {", ".join(self.strategies)}')
         
         df_new = df.copy()
             
@@ -289,7 +289,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
         if self.verbose:
-            print('  -> Dropping the 'id' column...')
+            print('  -> Dropping the "id" column...')
 
         if 'id' in df.columns:
             df = df.drop('id', axis=1)
