@@ -79,9 +79,11 @@ class ExperimentSetup:
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
 
-        heading = f'{dataset_name.upper()} DATASET'
-        print(heading)
-        print('=' * len(heading),'\n')
-        print(df.head(5))
+        # Don't print out the submission dataset
+        if dataset_name != 'submission':
+            heading = f'{dataset_name.upper()} DATASET'
+            print(heading)
+            print('=' * len(heading),'\n')
+            print(df.head(5))
 
         return df
