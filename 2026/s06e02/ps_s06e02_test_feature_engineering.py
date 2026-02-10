@@ -32,7 +32,8 @@ class TestFeatureFactory(unittest.TestCase):
                 'Presence', 'Absence', 'Absence', 'Absence', 'Presence', 
                 'Presence', 'Presence', 'Absence', 'Absence', 'Absence'
             ]        }
-        self.df = pd.DataFrame(data)
+        self.df = pd.DataFrame(data)          # small fixture for exact row checks
+        self.df_big = pd.concat([self.df] * 6, ignore_index=True)  # >= 50 rows for quantile bins
         self.seed = 10301
 
     def test_initialization(self):
@@ -51,7 +52,8 @@ class TestFeatureFactory(unittest.TestCase):
 
         # Should not raise
         FeatureFactory(strategies=[
-            'drop_id', 'interactions', 'one_hot_encoding', 'standard_scaling'
+            'drop_id', 'cast_categoricals', 'numeric_transforms', 'bins',
+            'cat_crosses', 'interactions', 'one_hot_encoding', 'standard_scaling'
         ])
 
     def test_drop_id(self):
@@ -93,6 +95,67 @@ class TestFeatureFactory(unittest.TestCase):
         self.assertIn('Angina_Pain_Interaction', df_trans.columns)
         self.assertAlmostEqual(df_trans.loc[0, 'Angina_Pain_Interaction'], 4, places=5)
 
+    def test_cast_categoricals(self):
+        """Test 'cast_categoricals' marks base categorical columns as dtype category (without needing 'interactions')."""
+        ff = FeatureFactory(strategies=['cast_categoricals'], target='Heart Disease')
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        # Spot-check a couple
+        self.assertTrue(str(df_trans['Sex'].dtype).startswith('category'))
+        self.assertTrue(str(df_trans['Thallium'].dtype).startswith('category'))
+
+    def test_numeric_transforms(self):
+        """Test 'numeric_transforms' creates expected numeric engineered features and remains finite."""
+        ff = FeatureFactory(strategies=['interactions', 'numeric_transforms'], target='Heart Disease')
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('log1p_Cholesterol', df_trans.columns)
+        self.assertIn('ST_depression_is_zero', df_trans.columns)
+        self.assertIn('log1p_ST_depression', df_trans.columns)
+        self.assertIn('MaxHR_ratio', df_trans.columns)
+        self.assertIn('ST_by_MaxHR', df_trans.columns)
+
+        # Row 1 has ST depression = 0.0 in fixture
+        self.assertEqual(int(df_trans.loc[1, 'ST_depression_is_zero']), 1)
+
+        # No inf / NaN in created numeric columns for this fixture
+        for c in ['log1p_Cholesterol', 'log1p_ST_depression', 'MaxHR_ratio', 'ST_by_MaxHR']:
+            self.assertTrue(np.isfinite(df_trans[c].astype(float)).all())
+
+    def test_bins(self):
+        """Test 'bins' creates bin columns (Age always; others require >=50 rows)."""
+        ff = FeatureFactory(
+            strategies=['interactions', 'numeric_transforms', 'bins'],
+            target='Heart Disease'
+        )
+        ff.fit(self.df_big)
+        df_trans = ff.transform(self.df_big)
+
+        # Age bins should always exist (fixed edges in fit)
+        self.assertIn('Age_bin', df_trans.columns)
+        self.assertTrue(str(df_trans['Age_bin'].dtype).startswith('category'))
+
+        # With >=50 rows, quantile bins should also be learned/materialized
+        self.assertIn('Cholesterol_bin', df_trans.columns)
+        self.assertIn('BP_bin', df_trans.columns)
+        self.assertIn('ST_depression_bin', df_trans.columns)
+        self.assertIn('MaxHR_ratio_bin', df_trans.columns)
+
+    def test_cat_crosses(self):
+        """Test 'cat_crosses' creates crossed categorical columns."""
+        ff = FeatureFactory(
+            strategies=['cat_crosses'],
+            target='Heart Disease'
+        )
+        ff.fit(self.df)
+        df_trans = ff.transform(self.df)
+
+        self.assertIn('Vessels_x_Thallium', df_trans.columns)
+        self.assertIn('ChestPain_x_SlopeST', df_trans.columns)
+        self.assertTrue(str(df_trans['Vessels_x_Thallium'].dtype).startswith('category'))
+
     def test_one_hot_encoding(self):
         """Test 'one_hot_encoding' converts nominal cats to binaries."""
         ff = FeatureFactory(strategies=['one_hot_encoding'])
@@ -110,18 +173,41 @@ class TestFeatureFactory(unittest.TestCase):
         self.assertIn('EKG results_2', df_trans.columns)
 
         # Check value mapping
-        # Row 0 is 'female'
+        # Row 0 has Sex == 1 in fixture, so Sex_1 should be 1
         self.assertEqual(df_trans.loc[0, 'Sex_0'], 0.0)
         self.assertEqual(df_trans.loc[0, 'Sex_1'], 1.0)
 
         # Check handle_unknown='ignore'
         # Pass a df with a brand new category. It should result in all 0s for that feature group.
-        new_data = pd.DataFrame(self.df.iloc[0:1].to_dict()) # Clone row 0
+        new_data = pd.DataFrame(self.df.iloc[0:1].to_dict())
+
+        # Make Sex explicitly categorical/string for this test so assigning a new label is valid
+        new_data['Sex'] = new_data['Sex'].astype(str)
         new_data.loc[0, 'Sex'] = 'alien_species' # Unknown category
         
         df_new_trans = ff.transform(new_data)
         self.assertEqual(df_new_trans.loc[0, 'Sex_0'], 0.0)
         self.assertEqual(df_new_trans.loc[0, 'Sex_1'], 0.0)
+        
+    def test_one_hot_encoding_includes_engineered_cats(self):
+        """OHE should include engineered categorical columns from bins/crosses when those strategies are active."""
+        ff = FeatureFactory(
+            strategies=['interactions', 'numeric_transforms', 'bins', 'cat_crosses', 'one_hot_encoding'],
+            target='Heart Disease'
+        )
+        ff.fit(self.df_big)
+        df_trans = ff.transform(self.df_big)
+
+        # Engineered cats should have been one-hot encoded (original cols removed)
+        self.assertNotIn('Vessels_x_Thallium', df_trans.columns)
+        self.assertNotIn('Age_bin', df_trans.columns)
+
+        # But at least one OHE column derived from them should exist
+        engineered_ohe_cols = [c for c in df_trans.columns if c.startswith('Vessels_x_Thallium_')]
+        self.assertTrue(len(engineered_ohe_cols) > 0)
+
+        agebin_ohe_cols = [c for c in df_trans.columns if c.startswith('Age_bin_')]
+        self.assertTrue(len(agebin_ohe_cols) > 0)
 
     def test_standard_scaling(self):
         """Test 'standard_scaling' centers numeric data around 0."""
@@ -145,10 +231,10 @@ class TestFeatureFactory(unittest.TestCase):
     def test_linear_pipeline_combo(self):
         """Test the combination of OHE and Scaling (Ridge pipeline)."""
         # This confirms that OHE columns created during the process are subsequently scaled.
-        strategies = ['one_hot_encoding', 'standard_scaling']
+        strategies = ['interactions', 'numeric_transforms', 'bins', 'cat_crosses', 'one_hot_encoding', 'standard_scaling']
         ff = FeatureFactory(strategies=strategies, target='Heart Disease')
         
-        df_trans = ff.fit_transform(self.df)
+        df_trans = ff.fit_transform(self.df_big)
         
         # Check OHE column presence
         self.assertIn('Sex_0', df_trans.columns)
@@ -164,6 +250,10 @@ class TestFeatureFactory(unittest.TestCase):
         
         # Check Scaling on standard numeric
         self.assertAlmostEqual(df_trans['Age'].mean(), 0.0, places=5)
+
+        # Engineered OHE columns should exist in the linear pipeline too
+        self.assertTrue(any(c.startswith('Age_bin_') for c in df_trans.columns))
+        self.assertTrue(any(c.startswith('Vessels_x_Thallium_') for c in df_trans.columns))
         
 if __name__ == '__main__':
     unittest.main()
