@@ -9,9 +9,10 @@ class ExperimentSetup:
     """
     Handles global configuration, seeding, and environment setup.
     """
-    def __init__(self, seed=10301, model_name=None):
+    def __init__(self, seed=10301, model_name=None, target='Heart Disease'):
         self.seed = seed
         self.model_name=model_name
+        self.target=target
 
     
     def running_in_kaggle(self) -> bool:

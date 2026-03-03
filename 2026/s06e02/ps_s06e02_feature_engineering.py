@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from pandas.api.types import is_numeric_dtype
+from pandas.api.types import CategoricalDtype
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -30,6 +32,10 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     """
     valid_strategies = [
         'drop_id',
+        'cast_categoricals',
+        'numeric_transforms',
+        'bins',
+        'cat_crosses',
         'one_hot_encoding',
         'interactions',
         'standard_scaling'
@@ -60,6 +66,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         
         self._ohe_cols_ = None
         self._scaling_cols_ = None
+        self._bin_edges_: Dict[str, np.ndarray] = {}
+        self._engineered_cat_cols_: List[str] = []
         
         invalid_strategies = set()
         
@@ -99,22 +107,15 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             
         df_new = df.copy()
 
+        # Replicate generation steps so learned transforms (bins/OHE/scaler)
+        # see the same columns that will exist at transform-time.
+        df_new = self._apply_generation_steps_for_fit(df_new)
+
         if 'one_hot_encoding' in self.strategies:
             self._add_one_hot_encoding_fit(df_new)
             
-        # We run this last or near last to scale generated features too
         if 'standard_scaling' in self.strategies:
-            # We need to temporarily apply transformations that create columns
-            # to know what columns exist for scaling.
-            # However, for simplicity here, we assume scaling handles existing numeric cols
-            # at the time of transform.
-            # Better approach: We calculate mean/std during the fit phase.
-            # To do that accurately, we must replicate the generation steps on df_new
-            # before fitting the scaler.
-            if 'drop_id' in self.strategies:
-                df_new = self._drop_ids(df_new)
-
-            # Apply OHE transformation to df_new so we scale the OHE columns too if needed    
+            # scale after OHE, so linear/NN can scale OHE columns too
             if 'one_hot_encoding' in self.strategies:
                 df_new = self._add_one_hot_encoding_transform(df_new)
             
@@ -139,6 +140,18 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'interactions' in self.strategies:
             df_new = self._add_interactions(df_new)
         
+        if 'cast_categoricals' in self.strategies:
+            df_new = self._cast_categoricals(df_new)
+
+        if 'numeric_transforms' in self.strategies:
+            df_new = self._add_numeric_transforms(df_new)
+
+        if 'bins' in self.strategies:
+            df_new = self._add_bins_transform(df_new)
+
+        if 'cat_crosses' in self.strategies:
+            df_new = self._add_cat_crosses(df_new)
+
         if 'one_hot_encoding' in self.strategies:
             df_new = self._add_one_hot_encoding_transform(df_new)
 
@@ -181,7 +194,41 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                .replace('-', '_')
         )
 
+
+    def _as_numeric_series(self, s: pd.Series) -> pd.Series:
+        if isinstance(s.dtype, CategoricalDtype):
+            # if categories are numeric strings/ints, try numeric; else codes
+            try:
+                return pd.to_numeric(s.astype(str), errors='raise')
+            except Exception:
+                return s.cat.codes.astype('float64')
+                
+        return pd.to_numeric(s, errors='coerce')
+
     
+    def _apply_generation_steps_for_fit(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Apply the same feature-generation steps used in transform(),
+        but without any learned transforms that depend on already-fitted state.
+        This is used so OHE/scaler are fit on the final feature set.
+        """
+        df_new = df.copy()
+        if 'drop_id' in self.strategies:
+            df_new = self._drop_ids(df_new)
+        if 'interactions' in self.strategies:
+            df_new = self._add_interactions(df_new)
+        if 'cast_categoricals' in self.strategies:
+            df_new = self._cast_categoricals(df_new)
+        if 'numeric_transforms' in self.strategies:
+            df_new = self._add_numeric_transforms(df_new)
+        if 'bins' in self.strategies:
+            df_new = self._add_bins_fit(df_new)      # learns bin edges
+            df_new = self._add_bins_transform(df_new) # materialize bin columns
+        if 'cat_crosses' in self.strategies:
+            df_new = self._add_cat_crosses(df_new)
+        return df_new
+
+
     def _drop_ids(self, df: pd.DataFrame) -> pd.DataFrame:
         # Dropping the 'id' column
         if self.verbose:
@@ -196,6 +243,14 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         return df
 
     
+    def _cast_categoricals(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Casting categoricals...')
+        for col in self.cat_cols:
+            if col in df.columns:
+                df[col] = df[col].astype('category')
+        return df
+
 
     def _add_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -229,20 +284,149 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Exercise Angina & Chest Pain Interaction
         # (1 = Yes Angina) * Chest Pain Type creates a risk severity scale
         if 'Exercise angina' in df.columns and 'Chest pain type' in df.columns:
-            df['Angina_Pain_Interaction'] = df['Exercise angina'] * df['Chest pain type']
+            df['Angina_Pain_Interaction'] = self._as_numeric_series(df['Exercise angina']) * self._as_numeric_series(df['Chest pain type'])
 
-        # ---------------------------------------------------------
-        # Categorical Type Casting
-        # ---------------------------------------------------------
-        # Gradient Boosting models (XGB/LGBM/Cat) work best when 
-        # distinct integer categories are explicitly cast as 'category'
-        for col in self.cat_cols:
-            if col in df.columns:
-                df[col] = df[col].astype('category')
-        
+        # Angina_Asymptomatic
+        # (1 = No Angina)
+        df['Angina_Asymptomatic'] = (df['Chest pain type'] == 4).astype(int)
+
+        # Age_HR_Stress
+        # Interaction between age and cardiac workload
+        df['Age_HR_Stress'] = (df['Age'] * df['Max HR']) / 100.0
+
+        # Relative_BP
+        # Blood pressure normalized by age to better represent cardiovascular strain.
+        df['Relative_BP'] = df['BP'] / (df['Age'] + eps)
+
+        # Cholesterol_Risk
+        # Flag risk if above a threshold
+        df['Cholesterol_Risk'] = (df['Cholesterol'] > 240.0).astype(int)
+
+        # Stress_Index
+        # Captures the intensity of ischemic response during physical activity.
+        df['Stress_Index'] = df['Exercise angina'] * df['Slope of ST']
+
+        # Vessel_Severity
+        # Structural vessel abnormalities and thalassemia test results can be combined to represent anatomical severity.
+        df['Vessel_Severity'] = df['Number of vessels fluro'] * df['Thallium']
+
+        # Total_Risk
+        # Cumulative cardiovascular burden feature can also be constructed by aggregating key risk indicators.
+        df['Total_Risk'] = df['BP'] + df['Cholesterol'] + df['Slope of ST'] + df['Age']
+
+        # Heart_Load
+        # Composite cardiac load indicator
+        df['Heart_Load'] = (df['BP'] * df['Cholesterol']) / (df['Max HR'] + eps)
         return df
         
+
+    def _add_numeric_transforms(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        NaN-safe numeric transforms that help across XGB/LGBM/Cat/NN.
+        """
+        if self.verbose:
+            print('  -> Adding numeric transforms...')
+            
+        # log transforms (guard for negatives; these should be >=0 in this dataset)
+        eps = 1e-6
+        if 'Cholesterol' in df.columns:
+            df['log1p_Cholesterol'] = np.log1p(np.clip(df['Cholesterol'].astype(float), 0, None))
+            
+        if 'ST depression' in df.columns:
+            st = df['ST depression'].astype(float)
+            df['ST_depression_is_zero'] = (st.fillna(0) == 0).astype('int8')
+            df['log1p_ST_depression'] = np.log1p(np.clip(st, 0, None))
+            
+        # ratios
+        if 'Max HR' in df.columns and 'Theoretical_Max_HR' in df.columns:
+            df['MaxHR_ratio'] = df['Max HR'] / (df['Theoretical_Max_HR'].astype(float) + eps)
+            
+        if 'ST depression' in df.columns and 'Max HR' in df.columns:
+            df['ST_by_MaxHR'] = df['ST depression'].astype(float) / (df['Max HR'].astype(float) + eps)
+            
+        return df
+
+
+    def _add_bins_fit(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Learn bin edges on training data only (fold-safe).
+        Store edges in self._bin_edges_.
+        """
+        if self.verbose:
+            print('  -> Learning bin edges...')
+            
+        self._bin_edges_.clear()
         
+        # Fixed bins for Age (domain-ish)
+        if 'Age' in df.columns:
+            self._bin_edges_['Age'] = np.array([0, 30, 40, 50, 60, 70, 80, 200], dtype=float)
+            
+        # Quantile bins for skewed/continuous-ish columns
+        for col, q in [('Cholesterol', 10), ('BP', 10), ('ST depression', 10), ('MaxHR_ratio', 10)]:
+            if col in df.columns and is_numeric_dtype(df[col]):
+                s = df[col].astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+                if len(s) < 50:
+                    continue
+                    
+                qs = np.linspace(0, 1, q + 1)
+                edges = np.unique(np.quantile(s, qs))
+                if len(edges) >= 3:
+                    # expand ends a hair so pd.cut includes extremes
+                    edges[0] = edges[0] - 1e-9
+                    edges[-1] = edges[-1] + 1e-9
+                    self._bin_edges_[col] = edges
+                    
+        return df
+
+
+    def _add_bins_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Materialize *_bin columns using learned edges. Output are categorical codes.
+        """
+        if self.verbose:
+            print('  -> Adding bins...')
+            
+        engineered = []
+        for col, edges in self._bin_edges_.items():
+            if col not in df.columns:
+                continue
+                
+            out_col = f'{self._normalize_name(col)}_bin'
+            df[out_col] = self._safe_cut_codes(df[col].astype(float), bins=edges)
+            df[out_col] = df[out_col].astype('category')
+            engineered.append(out_col)
+            
+        # track engineered cat cols for CatBoost/LGBM convenience
+        self._engineered_cat_cols_ = sorted(set(self._engineered_cat_cols_ + engineered))
+        
+        return df
+
+
+    def _add_cat_crosses(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Low-cardinality categorical crosses as single token/category.
+        Good for CatBoost and NN embeddings; OK for LGBM/XGB native-cat.
+        """
+        if self.verbose:
+            print('  -> Adding categorical crosses...')
+            
+        engineered = []
+        crosses = [
+            ('Number of vessels fluro', 'Thallium', 'Vessels_x_Thallium'),
+            ('Chest pain type', 'Slope of ST', 'ChestPain_x_SlopeST'),
+        ]
+        
+        for a, b, name in crosses:
+            if a in df.columns and b in df.columns:
+                s = df[a].astype(str) + '|' + df[b].astype(str)
+                df[name] = s.astype('category')
+                engineered.append(name)
+                
+        self._engineered_cat_cols_ = sorted(set(self._engineered_cat_cols_ + engineered))
+        
+        return df
+
+
     def _add_one_hot_encoding_fit(self, df: pd.DataFrame) -> None:
         """
         Fit-time one hot encoding:
@@ -253,7 +437,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.verbose:
             print('  -> One-Hot Encoding: fitting...')
             
-        cat_cols = self.cat_cols
+        # OHE should include engineered categorical columns too
+        cat_cols = [c for c in (self.cat_cols + self._engineered_cat_cols_) if c in df.columns]
         self._ohe_cols_ = cat_cols
         
         if not cat_cols:
@@ -289,7 +474,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # Drop original cats and concat
         df = df.drop(columns=self._ohe_cols_)
         df = pd.concat([df, encoded_df], axis=1)
+
         return df
+
 
     def _add_standard_scaling_fit(self, df: pd.DataFrame) -> None:
         """
@@ -357,8 +544,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             if df[col].dtype == 'object' or str(df[col].dtype).startswith('category'):
                 cat_cols.append(col)
 
-        # Explicit discrete engineered columns
-        for c in ['class_attendance_class', 'sleep_hours_class', 'study_hours_class', 'cluster_label']:
+        # Explicit engineered categorical columns we track
+        for c in self._engineered_cat_cols_:
             if c in df.columns:
                 cat_cols.append(c)
 
