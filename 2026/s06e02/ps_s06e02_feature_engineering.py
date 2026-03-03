@@ -137,13 +137,12 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'drop_id' in self.strategies:
             df_new = self._drop_ids(df_new)
         
-        # Make categorical typing independent of 'interactions'
-        if 'cast_categoricals' in self.strategies:
-            df_new = self._cast_categoricals(df_new)
-
         if 'interactions' in self.strategies:
             df_new = self._add_interactions(df_new)
         
+        if 'cast_categoricals' in self.strategies:
+            df_new = self._cast_categoricals(df_new)
+
         if 'numeric_transforms' in self.strategies:
             df_new = self._add_numeric_transforms(df_new)
 
@@ -216,10 +215,10 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df_new = df.copy()
         if 'drop_id' in self.strategies:
             df_new = self._drop_ids(df_new)
-        if 'cast_categoricals' in self.strategies:
-            df_new = self._cast_categoricals(df_new)
         if 'interactions' in self.strategies:
             df_new = self._add_interactions(df_new)
+        if 'cast_categoricals' in self.strategies:
+            df_new = self._cast_categoricals(df_new)
         if 'numeric_transforms' in self.strategies:
             df_new = self._add_numeric_transforms(df_new)
         if 'bins' in self.strategies:
@@ -286,7 +285,38 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # (1 = Yes Angina) * Chest Pain Type creates a risk severity scale
         if 'Exercise angina' in df.columns and 'Chest pain type' in df.columns:
             df['Angina_Pain_Interaction'] = self._as_numeric_series(df['Exercise angina']) * self._as_numeric_series(df['Chest pain type'])
-            
+
+        # Angina_Asymptomatic
+        # (1 = No Angina)
+        df['Angina_Asymptomatic'] = (df['Chest pain type'] == 4).astype(int)
+
+        # Age_HR_Stress
+        # Interaction between age and cardiac workload
+        df['Age_HR_Stress'] = (df['Age'] * df['Max HR']) / 100.0
+
+        # Relative_BP
+        # Blood pressure normalized by age to better represent cardiovascular strain.
+        df['Relative_BP'] = df['BP'] / (df['Age'] + eps)
+
+        # Cholesterol_Risk
+        # Flag risk if above a threshold
+        df['Cholesterol_Risk'] = (df['Cholesterol'] > 240.0).astype(int)
+
+        # Stress_Index
+        # Captures the intensity of ischemic response during physical activity.
+        df['Stress_Index'] = df['Exercise angina'] * df['Slope of ST']
+
+        # Vessel_Severity
+        # Structural vessel abnormalities and thalassemia test results can be combined to represent anatomical severity.
+        df['Vessel_Severity'] = df['Number of vessels fluro'] * df['Thallium']
+
+        # Total_Risk
+        # Cumulative cardiovascular burden feature can also be constructed by aggregating key risk indicators.
+        df['Total_Risk'] = df['BP'] + df['Cholesterol'] + df['Slope of ST'] + df['Age']
+
+        # Heart_Load
+        # Composite cardiac load indicator
+        df['Heart_Load'] = (df['BP'] * df['Cholesterol']) / (df['Max HR'] + eps)
         return df
         
 
