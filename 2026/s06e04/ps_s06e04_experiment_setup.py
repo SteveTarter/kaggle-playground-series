@@ -9,7 +9,7 @@ class ExperimentSetup:
     """
     Handles global configuration, seeding, and environment setup.
     """
-    def __init__(self, seed=10301, model_name=None, target='Churn'):
+    def __init__(self, seed=10301, model_name=None, target='Irrigation_Need'):
         self.seed = seed
         self.model_name=model_name
         self.target=target
