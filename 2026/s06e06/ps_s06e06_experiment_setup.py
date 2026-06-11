@@ -9,10 +9,20 @@ class ExperimentSetup:
     """
     Handles global configuration, seeding, and environment setup.
     """
-    def __init__(self, seed=10301, model_name=None, target='class'):
-        self.seed = seed
-        self.model_name=model_name
-        self.target=target
+    def __init__(
+        self, seed=10301,
+        model_name=None,
+        target='class',
+        use_gpu=False,
+        perform_rfe=False,
+        perform_optuna_tuning=False
+    ):
+        self._seed = seed
+        self._model_name = model_name
+        self._target=target
+        self._use_gpu = use_gpu
+        self._perform_rfe = perform_rfe
+        self._perform_optuna_tuning = perform_optuna_tuning
 
     
     def running_in_kaggle(self) -> bool:
@@ -32,23 +42,39 @@ class ExperimentSetup:
         except Exception:
             return False
 
-            
+
+    def use_gpu(self) -> bool:
+        return self._use_gpu
+
+        
+    def perform_rfe(self) -> bool:
+        return self._perform_rfe
+
+        
+    def perform_optuna_tuning(self) -> bool:
+        """
+        Prevent accidentally running Optuna on Kaggle.
+        It burns too much GPU budget.
+        """
+        return self._perform_optuna_tuning and not self.running_in_kaggle()
+
+        
     def set_seeds(self, seed=None) -> int:
         if seed is not None:
-            self.seed = seed
+            self._seed = seed
             
-        os.environ['PYTHONHASHSEED'] = str(self.seed)
-        random.seed(self.seed)
-        np.random.seed(self.seed)
-        # tf.random.set_seed(seed) # Uncomment before using TensorFlow
-        # torch.manual_seed(seed)  # Uncomment before using PyTorch
-        print(f'Random seed set to: {self.seed}')
+        os.environ['PYTHONHASHSEED'] = str(self._seed)
+        random.seed(self._seed)
+        np.random.seed(self._seed)
+        # tf.random.set_seed(_seed) # Uncomment before using TensorFlow
+        # torch.manual_seed(_seed)  # Uncomment before using PyTorch
+        print(f'Random seed set to: {self._seed}')
         
-        return self.seed
+        return self._seed
 
     
     def get_seed(self) -> int:
-        return self.seed
+        return self._seed
 
         
     def configure_pandas(self, max_cols=None, max_rows=100, float_precision=3):
@@ -88,3 +114,17 @@ class ExperimentSetup:
             print(df.head(5))
 
         return df
+
+    def describe(self):
+        print('\nExperiment Setup')
+        print('================')
+        if self._model_name:
+            print(f'Model         : {self._model_name}')
+
+        optuna_overridden = '' if self._perform_optuna_tuning == self.perform_optuna_tuning() else 'Overridden'
+        
+        print(f'Target        : {self._target}')
+        print(f'Use GPU       : {self._use_gpu}')
+        print(f'RFE           : {self._perform_rfe}')
+        print(f'Optuna Tuning : {self.perform_optuna_tuning()} {optuna_overridden}')
+        print(f'On Kaggle     : {self.running_in_kaggle()}')

@@ -23,6 +23,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'interactions',  # Cross-feature interaction terms
         'redshift',      # Redshift-derived cosmological features
         'position',      # Sky-position features
+        'flux'           # Derived flux features
     ]
 
     def __init__(
@@ -31,7 +32,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         strategies=None,
         seed=10301,
         target='class',
-        verbose=False,
+        verbose=False
     ):
         if strategies is None:
             strategies = []
@@ -96,6 +97,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'encoding' in self.strategies:
             df_new = self._add_encoding(df_new)
+
+        if 'flux' in self.strategies:
+            df_new = self._add_flux(df_new)
 
         # Always drop id and target
         if 'id' in df_new.columns:
@@ -226,6 +230,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'color_range' in df.columns:
             df['z_x_color_range'] = z * df['color_range']
 
+        df['is_mid_z'] = ((z >= 0.1) & (z <= 0.5)).astype(np.int8)
+
         return df
 
     def _add_position_features(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -274,8 +280,28 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'std_mag' in df.columns:
             df['std_mag_x_z'] = df['std_mag'] * z
 
+        if 'u_minus_g' in df.columns and 'i_minus_z' in df.columns and 'std_mag' in df.columns:
+            df['color_skew'] = (df['u_minus_g'] - df['i_minus_z']) / (df['std_mag'] + 1e-5)
+        
         return df
 
+    
+    def _add_flux(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Flux-derived features.
+        """
+        if self.verbose:
+            print('  -> Adding flux features...')
+            
+        # Band pair ratios in linear flux space
+        for band in ['u', 'g', 'r', 'i', 'z']:
+            df[f'flux_{band}'] = np.power(10, -0.4 * df[band])
+        df['flux_u_over_g'] = df['flux_u'] / (df['flux_g'] + 1e-9)
+        df['total_flux']    = df[['flux_u','flux_g','flux_r','flux_i','flux_z']].sum(axis=1)
+
+        return df
+
+        
     # -------------------------
     # Utility
     # -------------------------
