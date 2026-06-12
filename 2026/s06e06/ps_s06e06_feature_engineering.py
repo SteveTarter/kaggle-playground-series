@@ -1,6 +1,7 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
+from itertools import combinations
 from sklearn.base import BaseEstimator, TransformerMixin
 from pandas.api.types import is_numeric_dtype
 
@@ -18,12 +19,13 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     valid_strategies = [
         'encoding',
-        'colors',        # Photometric color indices (magnitude differences)
-        'ratios',        # Flux/magnitude ratios and spectral shape features
-        'interactions',  # Cross-feature interaction terms
-        'redshift',      # Redshift-derived cosmological features
-        'position',      # Sky-position features
-        'flux'           # Derived flux features
+        'colors',             # Photometric color indices (magnitude differences)
+        'ratios',             # Flux/magnitude ratios and spectral shape features
+        'interactions',       # Cross-feature interaction terms
+        'redshift',           # Redshift-derived cosmological features
+        'position',           # Sky-position features
+        'flux',               # Derived flux features
+        'numeric_expansion',  # Log, sqrt, ratios, and differences
     ]
 
     def __init__(
@@ -67,6 +69,10 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     def fit(self, df: pd.DataFrame = None) -> 'FeatureFactory':
         if self.verbose:
             print('  -> Fitting DataFrame...')
+            
+        self.num_features_ = df.select_dtypes(exclude=['object', 'bool', 'category']).columns.tolist()
+        self.cat_features_ = df.select_dtypes(include=['object', 'bool', 'category']).columns.tolist()
+
         self._is_fit = True
         return self
 
@@ -101,12 +107,20 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'flux' in self.strategies:
             df_new = self._add_flux(df_new)
 
+        if 'numeric_expansion' in self.strategies:
+            df_new = self._add_numeric_expansion(df_new)
+            
         # Always drop id and target
         if 'id' in df_new.columns:
             df_new = df_new.drop('id', axis=1)
 
         if self.target in df_new.columns:
             df_new = df_new.drop(self.target, axis=1)
+
+        # If any feature has just one value, it's just noise.
+        drop = [c for c in df_new.columns if df_new[c].nunique(dropna=False) == 1]
+        if drop:
+            df_new.drop(drop, axis=1, inplace=True)
 
         return df_new
 
@@ -115,6 +129,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     def get_strategies(self) -> list:
         return self.strategies
+
 
     # -------------------------
     # Internals
@@ -142,6 +157,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         return df
 
+    
     def _add_colors(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Standard SDSS photometric color indices (magnitude differences).
@@ -171,6 +187,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         return df
 
+    
     def _add_ratios(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Magnitude-based ratio and spectral-shape features.
@@ -201,6 +218,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         return df
 
+    
     def _add_redshift_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Features derived from redshift.  Redshift is the single strongest
@@ -234,6 +252,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         return df
 
+    
     def _add_position_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Sky-coordinate features from right ascension (alpha) and
@@ -257,6 +276,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         return df
 
+        
     def _add_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Higher-order interactions between the most discriminating features.
@@ -299,6 +319,22 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['flux_u_over_g'] = df['flux_u'] / (df['flux_g'] + 1e-9)
         df['total_flux']    = df[['flux_u','flux_g','flux_r','flux_i','flux_z']].sum(axis=1)
 
+        return df
+
+    
+    def _add_numeric_expansion(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add square, square root, log, ratios, and differences 
+        of all of the original numeric features
+        """
+        if self.verbose:
+            print('  -> Adding blegga features...')
+
+        for c in self.num_features_:
+            df[f"Log_{c}"] = np.log1p(df[c])
+            df[f"{c}_sq"] = df[c]**2            
+            df[f"{c}_sqrt"] = df[c]**0.5
+        
         return df
 
         

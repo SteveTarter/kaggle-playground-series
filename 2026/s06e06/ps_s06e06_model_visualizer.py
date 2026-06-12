@@ -126,7 +126,10 @@ class ModelVisualizer:
                 # XGBoost (Booster object)
                 elif hasattr(model, 'get_booster'):
                     imp_dict = model.get_booster().get_score(importance_type='gain')
-                
+                # raw xgb.Booster (no get_booster() wrapper)
+                elif hasattr(model, 'get_score'):
+                    imp_dict = model.get_score(importance_type='gain')
+                    
             except Exception as e:
                 print(f'Error extracting importance for model {i}: {e}')
                 continue
