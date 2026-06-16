@@ -274,6 +274,15 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         # residual latitude effects remain
         df['abs_delta'] = np.abs(df['delta'])
 
+        df['alpha_sin'] = np.sin(alpha_rad)
+        df['alpha_cos'] = np.cos(alpha_rad)
+        df['delta_sin'] = np.sin(delta_rad)
+        df['delta_cos'] = np.cos(delta_rad)
+    
+        df['alpha_bin'] = pd.cut(df['alpha'], bins=24, labels=False, include_lowest=True)
+        df['delta_bin'] = pd.cut(df['delta'], bins=18, labels=False, include_lowest=True)
+        df['sky_bin'] = df['alpha_bin'].astype(str) + '_' + df['delta_bin'].astype(str)
+
         return df
 
         
