@@ -1,0 +1,13 @@
+xgb_best_params = {
+    "learning_rate": 0.03146368274669699,
+    "max_depth": 7,
+    "min_child_weight": 30.514047904773793,
+    "subsample": 0.87372199321955,
+    "colsample_bytree": 0.45889387037970225,
+    "colsample_bylevel": 0.9686320167668309,
+    "max_leaves": 57,
+    "reg_alpha": 0.31597935418120504,
+    "reg_lambda": 16.95556519638795,
+    "gamma": 0.8844614104869891
+}
+
