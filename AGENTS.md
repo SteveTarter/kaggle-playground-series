@@ -1,19 +1,41 @@
-# Repository Guidelines
+# AGENTS.md — kaggle-playground-series
 
-## Project Structure & Module Organization
-The repository groups Kaggle Playground entries by year under directories like `2025/`, then by episode (`s5e8`, `s5e9`, `s5e10`). Each episode folder contains one or more notebooks, raw CSVs inside `original_data/`, working feature sets in `data/`, and the latest `submission.csv`. Keep exploratory notebooks in the episode folder; promote reusable helpers into lightweight modules only when they outgrow a few cells.
+This repository contains Kaggle Playground Series competition notebooks, organized
+by year and episode (e.g., `2026/s06e06/`). Each competition is self-contained.
 
-## Build, Test, and Development Commands
-Create a local environment that mirrors Kaggle: `python -m venv .venv && source .venv/bin/activate` followed by `pip install jupyter pandas numpy scikit-learn lightgbm xgboost`. Launch notebooks with `jupyter lab 2025/s5e10` or use `kaggle kernels push` when iterating in the hosted environment. Rebuild submissions by running the notebook top-to-bottom and persist generated artifacts in the episode’s `data/` directory or as `submission.csv`.
+## Repo Layout
 
-## Coding Style & Naming Conventions
-Target Python 3.10+, 4-space indentation, and `snake_case` for variables, helper functions, and utility modules. Follow Camel Case titles without underscores for notebook filenames (e.g., `Road Accident Risk Prediction (S5E10).ipynb`). Keep cells focused; lift repeated logic into helper functions declared near the top. Use Markdown cells to record data sources, feature engineering notes, and leaderboard scores.
+```
+kaggle-playground-series/
+├── AGENTS.md                  ← you are here
+├── 2026/
+│   └── s06e06/
+│       ├── AGENTS.md          ← competition-specific instructions (start here)
+│       ├── ps_s06e06_feature_engineering.py
+│       ├── ps-s06e06-xgboost.ipynb
+│       ├── ps-s06e06-lightgbm.ipynb
+│       ├── ps-s06e06-catboost.ipynb
+│       ├── ps-s06e06-nn-tabular-resnet.ipynb
+│       └── ...
+└── ...
+```
 
-## Testing Guidelines
-Validation lives inside the notebooks. Add lightweight assertion cells (for example, `assert len(train_df) == 9557`) after major preprocessing steps. Track performance with stratified KFold or repeated train/validation splits and log metrics to a summary cell. Before replacing `submission.csv`, compare new metrics with prior runs and keep notable alternates under timestamped filenames inside `data/`.
+## Ground Rules
 
-## Commit & Pull Request Guidelines
-History favors concise, imperative commit subjects such as “Add K-Fold training.” Keep commits scoped to one modeling or data change and avoid checking in large raw downloads. Pull requests should explain modeling intent, link any related Kaggle discussion or issue, and attach validation outputs or screenshots. Call out new dependencies or environment tweaks so teammates can reproduce results quickly.
+- **Each competition directory has its own AGENTS.md.** Always read it before
+  touching any files in that directory — it contains the authoritative instructions
+  for that competition's conventions, architecture, and boundaries.
+- Notebooks are run on Kaggle (Python 3.10, GPU T4 x2). Do not assume a local
+  Python environment.
+- Never modify `submission.csv` or any output artifact directly; they are produced
+  by notebook runs.
+- Never add API keys, tokens, or secrets to any file.
+- Branches follow the pattern `sSSEEE-short-description` (e.g.,
+  `s06e06-predicting-stellar-class`). Work within the active competition branch.
 
-## Submission Workflow
-Store Kaggle-ready uploads as `submission.csv` within each episode folder and tag the producing notebook cell. Note the public leaderboard score in a Markdown cell so future contributors can trace performance changes.
+## Adding a New Competition
+
+1. Create `YYYY/sSSeEE/` directory on a new branch.
+2. Copy the `FeatureFactory.py` and notebook stubs from the most recent competition
+   as a starting point, then adapt.
+3. Write an `AGENTS.md` for the new competition before writing any model code.

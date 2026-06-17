@@ -144,8 +144,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.verbose:
             print('  -> Adding encoding features...')
 
-        # spectral_type: O/B < A < F < G < K < M  (rough temperature order)
-        spectral_order = ['O/B', 'A', 'F', 'G', 'K', 'M']
+        # spectral_type: O/B < A/F < G/K < M  (rough temperature order)
+        spectral_order = ['O/B', 'A/F', 'G/K', 'M']
         if 'spectral_type' in df.columns:
             df['spectral_type'] = pd.Categorical(
                 df['spectral_type'], categories=spectral_order, ordered=True
