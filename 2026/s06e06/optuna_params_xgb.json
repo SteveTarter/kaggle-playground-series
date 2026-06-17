@@ -1,4 +1,4 @@
-xgb_best_params = {
+{
     "learning_rate": 0.03146368274669699,
     "max_depth": 7,
     "min_child_weight": 30.514047904773793,
