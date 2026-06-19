@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import warnings
 import numpy as np
@@ -90,7 +91,7 @@ class ExperimentSetup:
         print('Warnings suppressed.')
 
 
-    def read_dataset(self, dataset_name) -> pd.DataFrame:
+    def read_dataset(self, dataset_name:str) -> pd.DataFrame:
         if dataset_name == 'training':
             data_dir = Path('/kaggle/input/competitions/playground-series-s6e6') if self.running_in_kaggle() else Path('data')
             df = pd.read_csv(data_dir / 'train.csv')
@@ -115,6 +116,46 @@ class ExperimentSetup:
 
         return df
 
+
+    def save_rfe(self, rfe_filename: str, optimal_cols: pd.Index) -> None:
+        path = Path(rfe_filename)
+        path.write_text(json.dumps(optimal_cols.tolist(), indent=2))
+        print(f"Saved {len(optimal_cols)} features to {path}")
+
+    
+    def load_rfe(self, rfe_filename: str, X: pd.DataFrame) -> pd.Index:
+        path = Path('/kaggle/input/datasets/stephentarter/ps-s06e06-artifacts') / rfe_filename \
+               if self.running_in_kaggle() else Path(rfe_filename)
+    
+        if path.exists():
+            optimal_cols = pd.Index(json.loads(path.read_text()))
+            print(f"Loaded {len(optimal_cols)} features from {path}")
+        else:
+            print(f"RFE file '{path}' not found — using all {len(X.columns)} columns.")
+            optimal_cols = X.columns
+    
+        return optimal_cols
+
+    def save_optuna_params(self, optuna_filename: str, params: dict) -> None:
+        path = Path(optuna_filename)
+        path.write_text(json.dumps(params, indent=2))
+        print(f"Saved {len(params)} parameters to {path}")
+
+    
+    def load_optuna_params(self, optuna_filename: str) -> dict:
+        path = Path('/kaggle/input/datasets/stephentarter/ps-s06e06-artifacts') / optuna_filename \
+               if self.running_in_kaggle() else Path(optuna_filename)
+    
+        if path.exists():
+            params = json.loads(path.read_text())
+            print(f"Loaded {len(params)} parameters from {path}")
+        else:
+            print(f"Optuna file '{path}' not found — returning empty dict.")
+            params = {}
+    
+        return params
+    
+    
     def describe(self):
         print('\nExperiment Setup')
         print('================')

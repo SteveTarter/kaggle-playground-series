@@ -70,6 +70,10 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.verbose:
             print('  -> Fitting DataFrame...')
             
+        # Always drop id and target
+        df.drop('id', axis=1, inplace=True, errors='ignore')
+        df.drop(self.target, axis=1, inplace=True, errors='ignore')
+        
         self.num_features_ = df.select_dtypes(exclude=['object', 'bool', 'category']).columns.tolist()
         self.cat_features_ = df.select_dtypes(include=['object', 'bool', 'category']).columns.tolist()
 
@@ -84,7 +88,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print(f'Applying FeatureFactory with strategies: {", ".join(self.strategies)}')
 
         df_new = df.copy()
-
+            
         # Strategy order matters: colors first (they feed ratios/interactions)
         if 'colors' in self.strategies:
             df_new = self._add_colors(df_new)
@@ -109,10 +113,6 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'numeric_expansion' in self.strategies:
             df_new = self._add_numeric_expansion(df_new)
-            
-        # Always drop id and target
-        if 'id' in df_new.columns:
-            df_new = df_new.drop('id', axis=1)
 
         if self.target in df_new.columns:
             df_new = df_new.drop(self.target, axis=1)
@@ -337,7 +337,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         of all of the original numeric features
         """
         if self.verbose:
-            print('  -> Adding blegga features...')
+            print('  -> Adding numeric_expansion features...')
 
         for c in self.num_features_:
             df[f"Log_{c}"] = np.log1p(df[c])

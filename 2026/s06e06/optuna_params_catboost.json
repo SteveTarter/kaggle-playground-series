@@ -1,11 +1,1 @@
-{
-    "learning_rate": 0.052259403904799,
-    "depth": 6,
-    "l2_leaf_reg": 8.184951619730263,
-    "random_strength": 6.7618126841990565,
-    "min_data_in_leaf": 24,
-    "leaf_estimation_iterations": 13,
-    "subsample": 0.9994422948343273,
-    "grow_policy": "SymmetricTree"
-}
-
+{"learning_rate": 0.04404103864951304, "depth": 6, "l2_leaf_reg": 5.781049411382222, "random_strength": 4.08407020757575, "min_data_in_leaf": 187, "leaf_estimation_iterations": 10, "subsample": 0.9695070622307045, "grow_policy": "SymmetricTree"}
