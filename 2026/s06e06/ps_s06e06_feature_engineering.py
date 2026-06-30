@@ -117,11 +117,6 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if self.target in df_new.columns:
             df_new = df_new.drop(self.target, axis=1)
 
-        # If any feature has just one value, it's just noise.
-        drop = [c for c in df_new.columns if df_new[c].nunique(dropna=False) == 1]
-        if drop:
-            df_new.drop(drop, axis=1, inplace=True)
-
         return df_new
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -317,15 +312,25 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     
     def _add_flux(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Flux-derived features.
-        """
+        Flux-derived features (Scaled to nanomaggies for numerical stability).
+        Handles SDSS -9999 missing data flags to prevent float overflows (inf).        """
         if self.verbose:
             print('  -> Adding flux features...')
             
-        # Band pair ratios in linear flux space
+        # Convert magnitudes to nanomaggies (zero-point at mag = 22.5)
+        # This scales the values up into the ~0.01 to 1000 range.
         for band in ['u', 'g', 'r', 'i', 'z']:
-            df[f'flux_{band}'] = np.power(10, -0.4 * df[band])
+            # SDSS uses -9999 for missing data. Anything below 0 is likely an error code.
+            # We replace them with NaN before calculating the flux.
+            safe_mag = df[band].where(df[band] > 0, np.nan)
+            
+            # Now calculate the flux safely
+            df[f'flux_{band}'] = np.power(10, -0.4 * (safe_mag - 22.5))
+            
+        # Add a small epsilon to the denominator to avoid division by zero
         df['flux_u_over_g'] = df['flux_u'] / (df['flux_g'] + 1e-9)
+
+        # Now total_flux will be a healthy float value instead of 0.000000001
         df['total_flux']    = df[['flux_u','flux_g','flux_r','flux_i','flux_z']].sum(axis=1)
 
         return df
@@ -340,9 +345,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
             print('  -> Adding numeric_expansion features...')
 
         for c in self.num_features_:
-            df[f"Log_{c}"] = np.log1p(df[c])
+            df[f"Log_{c}"] = np.log1p(np.clip(df[c], -1 + 1e-6, None))
             df[f"{c}_sq"] = df[c]**2            
-            df[f"{c}_sqrt"] = df[c]**0.5
+            df[f"{c}_sqrt"] = np.sqrt(np.clip(df[c], 0, None))
         
         return df
 

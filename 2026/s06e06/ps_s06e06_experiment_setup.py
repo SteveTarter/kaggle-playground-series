@@ -92,21 +92,32 @@ class ExperimentSetup:
 
 
     def read_dataset(self, dataset_name:str) -> pd.DataFrame:
+        '''
+        Loads datasets from the various sources.
+        Adds an 'is_original' flag to help models handle distribution shifts.
+        '''
         if dataset_name == 'training':
             data_dir = Path('/kaggle/input/competitions/playground-series-s6e6') if self.running_in_kaggle() else Path('data')
             df = pd.read_csv(data_dir / 'train.csv')
+            df['is_original'] = 0
         elif dataset_name == 'test':
             data_dir = Path('/kaggle/input/competitions/playground-series-s6e6') if self.running_in_kaggle() else Path('data')
             df = pd.read_csv(data_dir / 'test.csv')
+            df['is_original'] = 0
         elif dataset_name == 'original':
             data_dir = Path('/kaggle/input/datasets/fedesoriano/stellar-classification-dataset-sdss17') if self.running_in_kaggle() else Path('original_data')
             df = pd.read_csv(data_dir / 'star_classification.csv')
+            df['is_original'] = 1
         elif dataset_name == 'submission':
             data_dir = Path('/kaggle/input/competitions/playground-series-s6e6') if self.running_in_kaggle() else Path('data')
             df = pd.read_csv(data_dir / 'sample_submission.csv')
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
 
+        # Cast 'is_original' to bool so it doesn't appear in numeric combos.
+        if 'is_original' in df:
+            df['is_original'] = df['is_original'].astype('bool')
+            
         # Don't print out the submission dataset
         if dataset_name != 'submission':
             heading = f'{dataset_name.upper()} DATASET'
@@ -117,6 +128,56 @@ class ExperimentSetup:
         return df
 
 
+    def spectral_type(self, g, r):
+        return pd.cut(
+            r - g,
+            [-np.inf, -1, -0.5, 0, np.inf],
+            labels=['M', 'G/K', 'A/F', 'O/B'],
+        ).astype('str')
+        
+        
+    def galaxy_population(self, u, r):
+        return pd.cut(
+            u - r,
+            [-np.inf, 2.2, np.inf],
+            labels=['Blue_Cloud', 'Red_Sequence'],
+        ).astype('str')
+    
+    def get_combined_training_data(self, include_original: bool = True) -> pd.DataFrame:
+        """
+        Loads the training data and optionally concatenates the original dataset.
+        """
+        # Load base training data
+        train_df = self.read_dataset('training')
+        
+        if not include_original:
+            return train_df
+
+        # Load original data
+        orig_df = self.read_dataset('original')
+        
+        if 'spectral_type' not in orig_df.columns:
+            orig_df['spectral_type'] = self.spectral_type(orig_df['g'], orig_df['r'])
+        if 'galaxy_population' not in orig_df.columns:
+            orig_df['galaxy_population'] = self.galaxy_population(orig_df['u'], orig_df['r'])
+
+        # Safely find overlapping columns to avoid KeyErrors and duplicates
+        shared_cols = list(set(train_df.columns).intersection(set(orig_df.columns)))
+        
+        # Filter both datasets to only include the shared columns
+        orig_df = orig_df[shared_cols]
+        train_df_filtered = train_df[shared_cols]
+        
+        # Concatenate
+        combined_df = pd.concat([train_df_filtered, orig_df], ignore_index=True)
+        
+        # Fix the 'id' column for the appended rows
+        # This ensures every row has a unique ID for OOF tracking
+        combined_df['id'] = combined_df.index
+        
+        return combined_df
+
+    
     def save_rfe(self, rfe_filename: str, optimal_cols: pd.Index) -> None:
         path = Path(rfe_filename)
         path.write_text(json.dumps(optimal_cols.tolist(), indent=2))
