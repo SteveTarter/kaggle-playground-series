@@ -1,0 +1,10 @@
+{
+  "learning_rate": 0.04540414140008879,
+  "depth": 6,
+  "l2_leaf_reg": 4.832855528141586,
+  "random_strength": 3.1724961370358398,
+  "min_data_in_leaf": 55,
+  "leaf_estimation_iterations": 14,
+  "subsample": 0.8931080160599476,
+  "grow_policy": "SymmetricTree"
+}
