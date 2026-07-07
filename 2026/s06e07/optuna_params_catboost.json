@@ -1,0 +1,11 @@
+{
+  "learning_rate": 0.05818765367395137,
+  "depth": 6,
+  "l2_leaf_reg": 2.5523355445160028,
+  "random_strength": 3.5706750213155445,
+  "min_data_in_leaf": 192,
+  "leaf_estimation_iterations": 14,
+  "subsample": 0.8297720984153147,
+  "grow_policy": "Lossguide",
+  "max_leaves": 52
+}
