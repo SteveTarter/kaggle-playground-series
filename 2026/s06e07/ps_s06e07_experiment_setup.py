@@ -11,14 +11,19 @@ class ExperimentSetup:
     Handles global configuration, seeding, and environment setup for PS-S06E07.
     """
     def __init__(
-        self, seed=10301,
+        self,
+        seeds=[10301, 42, 2026, 777, 888],
         model_name=None,
         target='health_condition',
         use_gpu=False,
         perform_rfe=False,
-        perform_optuna_tuning=False
+        perform_optuna_tuning=False,
+        seed=None
     ):
-        self._seed = seed
+        if seed is not None:
+            self._seeds = [seed] if not isinstance(seed, list) else seed
+        else:
+            self._seeds = [seeds] if not isinstance(seeds, list) else seeds
         self._model_name = model_name
         self._target = target
         self._use_gpu = use_gpu
@@ -61,21 +66,21 @@ class ExperimentSetup:
 
         
     def set_seeds(self, seed=None) -> int:
-        if seed is not None:
-            self._seed = seed
-            
-        os.environ['PYTHONHASHSEED'] = str(self._seed)
-        random.seed(self._seed)
-        np.random.seed(self._seed)
-        # tf.random.set_seed(_seed) # Uncomment before using TensorFlow
-        # torch.manual_seed(_seed)  # Uncomment before using PyTorch
-        print(f'Random seed set to: {self._seed}')
+        current_seed = seed if seed is not None else self._seeds[0]
+        os.environ['PYTHONHASHSEED'] = str(current_seed)
+        random.seed(current_seed)
+        np.random.seed(current_seed)
+        # tf.random.set_seed(current_seed) # Uncomment before using TensorFlow
+        # torch.manual_seed(current_seed)  # Uncomment before using PyTorch
+        print(f'Random seed set to: {current_seed}')
         
-        return self._seed
+        return current_seed
 
-    
-    def seed(self) -> int:
-        return self._seed
+    def seed(self) -> list:
+        return self._seeds
+
+    def primary_seed(self) -> int:
+        return self._seeds[0]
 
         
     def configure_pandas(self, max_cols=None, max_rows=100, float_precision=3):
@@ -122,6 +127,10 @@ class ExperimentSetup:
         elif dataset_name == 'submission':
             data_dir = Path('/kaggle/input/competitions/playground-series-s6e7') if self.running_in_kaggle() else Path('data')
             df = pd.read_csv(data_dir / 'sample_submission.csv')
+        elif dataset_name == 'pseudo':
+            file_path = Path('/kaggle/input/notebooks/stephentarter/ps-s06e07-pseudo-labeling/data/train_pseudo.csv') if self.running_in_kaggle() else Path('data/train_pseudo.csv')
+            df = pd.read_csv(file_path)
+            df['is_original'] = 0
         else:
             raise ValueError(f"Unknown dataset name: {dataset_name}")
 
