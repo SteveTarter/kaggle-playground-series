@@ -1,7 +1,9 @@
 import os
 import json
+import shutil
 import random
 import warnings
+import subprocess
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -217,6 +219,125 @@ class ExperimentSetup:
         return params
     
     
+    def upload_artifact(self, file_to_upload:str) -> None:
+        
+        # Only Upload Artifact if not running on Kaggle
+        if not self.running_in_kaggle():
+            
+            print(f'\nUploading {file_to_upload} to Kaggle dataset...')
+            staging_dir = 'kaggle_upload_artifacts'
+            existing_dir = 'kaggle_existing_artifacts'
+            temp_artifacts = 'kaggle_temp_artifacts'
+            
+            os.makedirs(staging_dir, exist_ok=True)
+            os.makedirs(existing_dir, exist_ok=True)
+            os.makedirs(temp_artifacts, exist_ok=True)
+            
+            try:
+                # 1. Download metadata
+                metadata_cmd = [
+                    "/home/tarter/anaconda3/envs/kaggle_env/bin/kaggle",
+                    "datasets", "metadata",
+                    "stephentarter/ps-s06e07-artifacts",
+                    "-p", staging_dir
+                ]
+                subprocess.run(metadata_cmd, check=True)
+                
+                # Convert downloaded metadata to the flat format required for uploading
+                metadata_path = f'{staging_dir}/dataset-metadata.json'
+                with open(metadata_path, 'r') as f:
+                    meta_raw = json.load(f)
+                
+                info = meta_raw['info']
+                flat_meta = {
+                    "id": f"{info['ownerUser']}/{info['datasetSlug']}",
+                    "title": info['title'],
+                    "licenses": [{"name": "CC0-1.0"}]
+                }
+                
+                with open(metadata_path, 'w') as f:
+                    json.dump(flat_meta, f, indent=2)
+                    
+                # 2. Download existing files from the dataset to preserve them
+                try:
+                    download_cmd = [
+                        "/home/tarter/anaconda3/envs/kaggle_env/bin/kaggle",
+                        "datasets", "download",
+                        "stephentarter/ps-s06e07-artifacts",
+                        "-p", existing_dir,
+                        "--unzip"
+                    ]
+                    subprocess.run(download_cmd, check=True)
+                    
+                    # Copy all existing files to the temp folder
+                    for file in os.listdir(existing_dir):
+                        if file != 'dataset-metadata.json':
+                            shutil.copy(f'{existing_dir}/{file}', f'{temp_artifacts}/')
+                except Exception as dl_err:
+                    print(f"Could not download existing files (normal for first upload): {dl_err}")
+                    
+                # 3. Copy newly generated local file to the temp folder (overwriting if exist)
+                if os.path.exists(file_to_upload):
+                    shutil.copy(file_to_upload, f'{temp_artifacts}/')
+                    print(f"  Including local file: {file_to_upload}")
+                        
+                # 4. Copy everything from temp folder to staging directory
+                for file in os.listdir(temp_artifacts):
+                    shutil.copy(f'{temp_artifacts}/{file}', f'{staging_dir}/')
+                    
+                # 5. Push version
+                upload_cmd = [
+                    "/home/tarter/anaconda3/envs/kaggle_env/bin/kaggle",
+                    "datasets", "version",
+                    "-p", staging_dir,
+                    "-m", f'Auto-update {file_to_upload} artifact from local run'
+                ]
+                subprocess.run(upload_cmd, check=True)
+                print("Kaggle artifacts dataset upload completed successfully!")
+            except Exception as e:
+                print(f"Error uploading to Kaggle: {e}")
+            finally:
+                for path in (staging_dir, existing_dir, temp_artifacts):
+                    if os.path.exists(path):
+                        shutil.rmtree(path)
+
+
+    def save_probabilities(
+        self, 
+        model_prefix:str, 
+        oof_probs: np.ndarray, 
+        train_ids: pd.Series, 
+        y: pd.Series, 
+        filled_mask: np.ndarray, 
+        test_probs: np.ndarray, 
+        test_ids: pd.Series
+    ) -> None:
+        
+        output_dir = 'predictions'
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Column names match the class label mapping: at-risk=0, unhealthy=1, fit=2
+        prob_cols = ['prob_at_risk', 'prob_unhealthy', 'prob_fit']
+        
+        # OOF probabilities
+        oof_prob_df = pd.DataFrame(oof_probs, columns=prob_cols)
+        oof_df = pd.concat([
+            pd.DataFrame({'id': train_ids.values, 'target': y.values}),
+            oof_prob_df
+        ], axis=1)
+        oof_df = oof_df[filled_mask]
+        oof_df.to_csv(f'{output_dir}/{model_prefix}_oof_probs.csv', index=False)
+        
+        # Test probabilities
+        test_prob_df = pd.concat([
+            pd.DataFrame({'id': test_ids.values}),
+            pd.DataFrame(test_probs, columns=prob_cols)
+        ], axis=1)
+        test_prob_df.to_csv(f'{output_dir}/{model_prefix}_test_probs.csv', index=False)
+        
+        print(f'Saved for ensembling:\n - {output_dir}/{model_prefix}_oof_probs.csv\n - {output_dir}/{model_prefix}_test_probs.csv')
+
+        
     def describe(self):
         print('\nExperiment Setup')
         print('================')
