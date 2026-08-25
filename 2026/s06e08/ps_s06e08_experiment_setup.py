@@ -7,6 +7,8 @@ import subprocess
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
 
 class ExperimentSetup:
     """
@@ -66,7 +68,24 @@ class ExperimentSetup:
         """
         return self._perform_optuna_tuning and not self.running_in_kaggle()
 
+
+    def use_xkcd_style(self) -> None:
+        # First, determine where the font file is located
+        dev_font_path = "/home/tarter/repos/kaggle/kaggle-playground-series/resources/xkcd-script.ttf"
+        kaggle_font_path = "/kaggle/input/datasets/stephentarter/xkcd-resources/xkcd-script.ttf"
+        xkcd_font_path = kaggle_font_path if self.running_in_kaggle() else dev_font_path
+
+        fm.fontManager.addfont(xkcd_font_path)
+        font_name = fm.FontProperties(fname=xkcd_font_path).get_name()
+
+        plt.xkcd()
+        plt.rcParams['font.family'] = font_name
+
+        print('Using XKCD style')
         
+        return
+
+
     def set_seeds(self, seed=None) -> int:
         current_seed = seed if seed is not None else self._seeds[0]
         os.environ['PYTHONHASHSEED'] = str(current_seed)

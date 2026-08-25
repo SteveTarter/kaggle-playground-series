@@ -1,7 +1,12 @@
 {
-  "depth": 5,
-  "learning_rate": 0.2801611607358835,
-  "l2_leaf_reg": 2.81541299597934,
-  "random_strength": 0.0022062714104688326,
-  "bagging_temperature": 0.0612050689136209
+  "grow_policy": "Lossguide",
+  "depth": 4,
+  "learning_rate": 0.07987107042650678,
+  "l2_leaf_reg": 1.1679545120279269,
+  "random_strength": 4.620713794044027,
+  "min_data_in_leaf": 13,
+  "leaf_estimation_iterations": 13,
+  "subsample": 0.8364264633667712,
+  "max_leaves": 26,
+  "bootstrap_type": "Bernoulli"
 }

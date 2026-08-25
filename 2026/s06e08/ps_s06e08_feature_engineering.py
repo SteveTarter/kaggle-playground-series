@@ -27,6 +27,8 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'risk_score',
         'missing_flags',
         'numeric_expansion',
+        'age_benchmarks',
+        'behavioral_indices',
     ]
 
     def __init__(
@@ -38,6 +40,22 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         target='addicted_label',
         verbose=False
     ):
+        """
+        Initializes the FeatureFactory pipeline with selected strategies.
+
+        Parameters
+        ----------
+        strategies : list of str, optional
+            List of feature engineering strategy names to execute during transform.
+        impute_strategy : str, optional
+            Imputation strategy to apply ('median_mode' or None).
+        seed : int, default=10301
+            Random state seed for reproducibility.
+        target : str, default='addicted_label'
+            Name of the target column in the dataset.
+        verbose : bool, default=False
+            If True, prints progress messages during execution.
+        """
         if strategies is None:
             strategies = []
 
@@ -86,6 +104,20 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     # Public API
     # ----------------------------
     def fit(self, df: pd.DataFrame) -> 'FeatureFactory':
+        """
+        Fits the FeatureFactory by discovering feature dtypes and computing
+        imputation parameters (medians/modes) if configured.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The input training DataFrame.
+
+        Returns
+        -------
+        self : FeatureFactory
+            The fitted transformer instance.
+        """
         if self.verbose:
             print('  -> Fitting DataFrame...')
             
@@ -110,6 +142,20 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Transforms the input DataFrame by sequentially applying configured
+        feature engineering strategies.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            The input DataFrame to transform.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame augmented with engineered features.
+        """
         if not self._is_fit:
             raise RuntimeError('FeatureFactory must be fit() before transform().')
 
@@ -150,15 +196,42 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         if 'risk_score' in self.strategies:
             df_new = self._add_risk_score(df_new)
 
+        if 'age_benchmarks' in self.strategies:
+            df_new = self._add_age_benchmarks(df_new)
+
+        if 'behavioral_indices' in self.strategies:
+            df_new = self._add_behavioral_indices(df_new)
+
         if 'numeric_expansion' in self.strategies:
             df_new = self._add_numeric_expansion(df_new)
 
         return df_new
 
     def fit_transform(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Fits to data, then transforms it.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            Transformed DataFrame.
+        """
         return self.fit(df).transform(df)
 
     def get_strategies(self) -> list:
+        """
+        Returns the list of active strategies configured for this transformer instance.
+
+        Returns
+        -------
+        list of str
+            Active strategy names.
+        """
         return self.strategies
 
     # -------------------------
@@ -166,7 +239,17 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
     # -------------------------
     def _add_missing_flags(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Add binary indicators for features that are missing.
+        Adds binary indicator variables (0/1) for columns containing missing values.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with binary `is_missing_<col>` flags appended.
         """
         if self.verbose:
             print('  -> Adding missing flags...')
@@ -177,7 +260,22 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     def _add_encoding(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Convert object columns to pandas Categorical type with logical orders.
+        Encodes categorical variables into ordered pandas Categorical types or nominal dtypes.
+
+        Categorical mappings:
+        - `stress_level`: Ordinal mapping ('Low' < 'Medium' < 'High')
+        - `academic_work_impact`: Ordinal mapping ('No' < 'Yes')
+        - `gender`: Nominal category cast
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with encoded categorical columns.
         """
         if self.verbose:
             print('  -> Encoding categorical variables...')
@@ -203,7 +301,28 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     def _add_screen_time_ratios(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Calculates screen time fractions and ratios.
+        Calculates screen time breakdown fractions and intensity ratios.
+
+        Engineered features:
+        - `social_media_fraction`: Proportion of daily screen time spent on social media.
+        - `gaming_fraction`: Proportion of daily screen time spent on gaming.
+        - `total_social_gaming_hours`: Combined social media + gaming hours.
+        - `non_social_gaming_hours`: Remaining screen time outside social/gaming.
+        - `weekend_to_weekday_ratio`: Weekend screen time vs daily screen time.
+        - `app_opens_per_hour`: App opens per screen hour.
+        - `notifications_per_hour`: Notifications received per screen hour.
+        - `screen_time_per_age`, `app_opens_per_age`, `notifications_per_age`: Age-scaled metrics.
+        - `notifications_per_app_open`, `app_opens_to_notifications_ratio`: Inter-notification dynamics.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with screen time ratio features added.
         """
         if self.verbose:
             print('  -> Adding screen time ratio features...')
@@ -243,7 +362,24 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     def _add_sleep_stress(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Sleep and stress interactions.
+        Calculates sleep deficit, stress interactions, and sleep-to-screen ratios.
+
+        Engineered features:
+        - `sleep_shortage`: Deficit below 8.0 hours of recommended sleep.
+        - `stress_to_sleep_ratio`: Ratio of numerical stress level (1=Low, 2=Medium, 3=High) to sleep hours.
+        - `screen_time_to_sleep_ratio`: Daily screen time relative to sleep duration.
+        - `social_media_to_sleep_ratio`: Social media time relative to sleep duration.
+        - `gaming_to_sleep_ratio`: Gaming time relative to sleep duration.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with sleep/stress features added.
         """
         if self.verbose:
             print('  -> Adding sleep_stress interaction features...')
@@ -269,7 +405,22 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
     def _add_risk_score(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Additive heuristic risk score from unhealthy indicators.
+        Constructs an additive heuristic lifestyle risk score based on unhealthy indicators:
+        - Screen time > 6.0 hours (+1.0)
+        - High stress level (+1.0)
+        - Academic/work impact reported (+1.0)
+        - Sleep hours < 6.0 (+1.0)
+        - App opens > 100 per day (+1.0)
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with `addiction_risk_score` added.
         """
         if self.verbose:
             print('  -> Adding lifestyle risk score features...')
@@ -290,9 +441,107 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         df['addiction_risk_score'] = risk
         return df
 
+    def _add_age_benchmarks(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Derives peer-norm benchmark features relative to age cohorts.
+
+        Behavioral metrics (screen time, sleep, app opens) vary significantly across
+        age cohorts. Calculating deviations from age cohort averages isolates anomalous
+        behavior relative to peers.
+
+        Engineered features:
+        - `<col>_diff_from_age_mean`: Individual value minus age cohort mean.
+        - `<col>_ratio_to_age_mean`: Individual value divided by age cohort mean.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with age benchmark features added.
+        """
+        if self.verbose:
+            print('  -> Adding age benchmark features...')
+
+        if 'age' in df.columns:
+            # Create age groups (5-year / life stage cohorts)
+            age_bins = pd.cut(
+                df['age'],
+                bins=[0, 18, 25, 35, 50, 100],
+                labels=['<18', '18-24', '25-34', '35-49', '50+'],
+                include_lowest=True
+            )
+            
+            for col in ['daily_screen_time_hours', 'sleep_hours', 'social_media_hours', 'app_opens_per_day']:
+                if col in df.columns:
+                    group_means = df.groupby(age_bins, observed=False)[col].transform('mean')
+                    df[f'{col}_diff_from_age_mean'] = df[col] - group_means
+                    df[f'{col}_ratio_to_age_mean'] = df[col] / (group_means + 1e-5)
+
+        return df
+
+    def _add_behavioral_indices(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Calculates high-level behavioral indices capturing compulsivity, productivity loss,
+        and lifestyle balance.
+
+        Engineered features:
+        - `compulsive_checking_frequency`: App opens divided by daily screen time hours.
+        - `unproductive_leisure_ratio`: Leisure screen time (social media + gaming) divided by work/study hours.
+        - `non_screen_waking_hours`: Hours spent awake without screen exposure.
+        - `screen_to_waking_ratio`: Screen time as a fraction of total waking hours.
+        - `screen_sleep_total_hours`: Combined hours spent sleeping or using screens in a 24-hour day.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with behavioral index features added.
+        """
+        if self.verbose:
+            print('  -> Adding behavioral indices...')
+
+        # Compulsive checking frequency: opens per active screen hour
+        if 'app_opens_per_day' in df.columns and 'daily_screen_time_hours' in df.columns:
+            df['compulsive_checking_frequency'] = df['app_opens_per_day'] / (df['daily_screen_time_hours'] + 1e-5)
+
+        # Unproductive leisure ratio: (social_media + gaming) vs work/study
+        if all(c in df.columns for c in ['social_media_hours', 'gaming_hours', 'work_study_hours']):
+            leisure_hours = df['social_media_hours'] + df['gaming_hours']
+            df['unproductive_leisure_ratio'] = leisure_hours / (df['work_study_hours'] + 1e-5)
+
+        # Non-screen waking hours: time spent awake without screen exposure
+        if 'sleep_hours' in df.columns and 'daily_screen_time_hours' in df.columns:
+            waking_hours = (24.0 - df['sleep_hours']).clip(lower=0)
+            df['non_screen_waking_hours'] = (waking_hours - df['daily_screen_time_hours']).clip(lower=0)
+            df['screen_to_waking_ratio'] = df['daily_screen_time_hours'] / (waking_hours + 1e-5)
+
+        # Screen + sleep balance across total 24 hours
+        if 'sleep_hours' in df.columns and 'daily_screen_time_hours' in df.columns:
+            df['screen_sleep_total_hours'] = df['daily_screen_time_hours'] + df['sleep_hours']
+
+        return df
+
     def _add_numeric_expansion(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Logs, squares, and square roots of numerical columns.
+        Calculates mathematical transformations (Log, Square, Square Root) for numerical columns.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with numeric expansion features added.
         """
         if self.verbose:
             print('  -> Adding numeric expansion features...')
@@ -312,6 +561,16 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         """
         Returns the list of categorical columns present in df, including
         any engineered categorical columns tracked by this instance.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Input DataFrame.
+
+        Returns
+        -------
+        List[str]
+            Deduplicated list of categorical column names.
         """
         cat_cols = []
         for col in df.columns:
