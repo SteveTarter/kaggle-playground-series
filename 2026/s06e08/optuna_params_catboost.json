@@ -1,12 +1,10 @@
 {
   "grow_policy": "Lossguide",
   "depth": 4,
-  "learning_rate": 0.07987107042650678,
-  "l2_leaf_reg": 1.1679545120279269,
-  "random_strength": 4.620713794044027,
-  "min_data_in_leaf": 13,
-  "leaf_estimation_iterations": 13,
-  "subsample": 0.8364264633667712,
-  "max_leaves": 26,
-  "bootstrap_type": "Bernoulli"
+  "learning_rate": 0.07261237872732357,
+  "l2_leaf_reg": 1.0894719784817608,
+  "random_strength": 7.977766376800087,
+  "min_data_in_leaf": 117,
+  "subsample": 0.8701829529142904,
+  "max_leaves": 103
 }
