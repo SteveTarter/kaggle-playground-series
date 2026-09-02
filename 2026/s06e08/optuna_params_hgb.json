@@ -1,0 +1,7 @@
+{
+  "max_depth": 7,
+  "learning_rate": 0.09476687547041161,
+  "l2_regularization": 8.278157112698686,
+  "min_samples_leaf": 141,
+  "max_bins": 251
+}
