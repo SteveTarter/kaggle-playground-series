@@ -32,6 +32,7 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'income_age_benchmarks',
         'missing_flags',
         'numeric_expansion',
+        'group_aggregations',
     ]
 
     def __init__(
@@ -132,6 +133,32 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 mode_series = df_fit[col].mode(dropna=True)
                 self.modes_[col] = str(mode_series.iloc[0]) if not mode_series.empty else ''
 
+        # Learn group statistics if requested
+        if 'group_aggregations' in self.strategies:
+            self.group_stats_ = {}
+            group_keys_list = [
+                ['City_Type'],
+                ['Current_Car_Type'],
+                ['Home_Charging_Possible'],
+                ['Gender'],
+                ['City_Type', 'Current_Car_Type']
+            ]
+            agg_cols = [c for c in ['Annual_Income_USD', 'Daily_Commute_km', 'Charging_Stations_Near_Home'] if c in df_fit.columns]
+            for keys in group_keys_list:
+                if all(k in df_fit.columns for k in keys):
+                    group_key_name = '_'.join(keys)
+                    for col in agg_cols:
+                        grouped = df_fit.groupby(keys, observed=False)[col]
+                        stats = grouped.agg(['mean', 'std']).reset_index()
+                        global_mean = float(df_fit[col].mean(skipna=True))
+                        global_std = float(df_fit[col].std(skipna=True))
+                        self.group_stats_[(group_key_name, col)] = {
+                            'keys': keys,
+                            'stats': stats,
+                            'global_mean': global_mean,
+                            'global_std': global_std if global_std > 0 else 1.0
+                        }
+
         # Fit quantile binner if requested
         self.bin_cols_ = [c for c in ['Annual_Income_USD', 'Daily_Commute_km', 'Environmental_Concern_Level'] if c in df_fit.columns]
         if 'quantile_binning' in self.strategies and self.bin_cols_:
@@ -205,6 +232,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'numeric_expansion' in self.strategies:
             df_new = self._add_numeric_expansion(df_new)
+
+        if 'group_aggregations' in self.strategies:
+            df_new = self._add_group_aggregations(df_new)
 
         return df_new
 
@@ -400,3 +430,44 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 df[f'{col}_binned'] = binned[:, i]
 
         return df
+
+    def _add_group_aggregations(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding group aggregation features...')
+
+        if not hasattr(self, 'group_stats_'):
+            return df
+
+        for (group_key_name, col), info in self.group_stats_.items():
+            keys = info['keys']
+            stats_df = info['stats']
+            g_mean = info['global_mean']
+            g_std = info['global_std']
+
+            if len(keys) == 1:
+                k = keys[0]
+                mean_map = stats_df.set_index(k)['mean'].to_dict()
+                std_map = stats_df.set_index(k)['std'].to_dict()
+                mean_vals = pd.Series(df[k].astype(object).map(mean_map)).astype(float).fillna(g_mean).values
+                std_vals = pd.Series(df[k].astype(object).map(std_map)).astype(float).fillna(g_std).replace(0, g_std).values
+            else:
+                stats_indexed = stats_df.copy()
+                for k in keys:
+                    stats_indexed[k] = stats_indexed[k].astype(object)
+                stats_indexed = stats_indexed.set_index(keys)
+                df_keys = df[keys].copy()
+                for k in keys:
+                    df_keys[k] = df_keys[k].astype(object)
+                joined = df_keys.join(stats_indexed, on=keys, how='left')
+                mean_vals = joined['mean'].astype(float).fillna(g_mean).values
+                std_vals = joined['std'].astype(float).fillna(g_std).replace(0, g_std).values
+
+            if col in df.columns:
+                val = df[col].astype(float).fillna(g_mean).values
+                df[f'{col}_mean_by_{group_key_name}'] = mean_vals
+                df[f'{col}_diff_from_{group_key_name}_mean'] = val - mean_vals
+                df[f'{col}_ratio_to_{group_key_name}_mean'] = val / (mean_vals + 1e-5)
+                df[f'{col}_zscore_{group_key_name}'] = (val - mean_vals) / (std_vals + 1e-5)
+
+        return df.copy()
+
