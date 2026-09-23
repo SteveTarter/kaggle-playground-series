@@ -33,6 +33,9 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
         'missing_flags',
         'numeric_expansion',
         'group_aggregations',
+        'digit_decomposition',
+        'synthetic_spikes_boundaries',
+        'subsidy_interactions',
     ]
 
     def __init__(
@@ -235,6 +238,15 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
 
         if 'group_aggregations' in self.strategies:
             df_new = self._add_group_aggregations(df_new)
+
+        if 'digit_decomposition' in self.strategies:
+            df_new = self._add_digit_decomposition(df_new)
+
+        if 'synthetic_spikes_boundaries' in self.strategies:
+            df_new = self._add_synthetic_spikes_boundaries(df_new)
+
+        if 'subsidy_interactions' in self.strategies:
+            df_new = self._add_subsidy_interactions(df_new)
 
         return df_new
 
@@ -470,4 +482,72 @@ class FeatureFactory(BaseEstimator, TransformerMixin):
                 df[f'{col}_zscore_{group_key_name}'] = (val - mean_vals) / (std_vals + 1e-5)
 
         return df.copy()
+
+    def _add_digit_decomposition(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding digit decomposition features...')
+
+        if 'Annual_Income_USD' in df.columns:
+            income = df['Annual_Income_USD'].fillna(0).astype(int)
+            df['Annual_Income_USD_unit_digit'] = (income % 10).astype(np.int8)
+            df['Annual_Income_USD_ten_digit'] = ((income // 10) % 10).astype(np.int8)
+            df['Annual_Income_USD_mod1000'] = (income % 1000).astype(np.int16)
+            df['Annual_Income_USD_mod5000'] = (income % 5000).astype(np.int16)
+
+        if 'Daily_Commute_km' in df.columns:
+            commute = df['Daily_Commute_km'].fillna(0).astype(int)
+            df['Daily_Commute_km_unit_digit'] = (commute % 10).astype(np.int8)
+            df['Daily_Commute_km_mod5'] = (commute % 5).astype(np.int8)
+
+        if 'Age' in df.columns:
+            age = df['Age'].fillna(0).astype(int)
+            df['Age_unit_digit'] = (age % 10).astype(np.int8)
+
+        return df
+
+    def _add_synthetic_spikes_boundaries(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding synthetic spikes and boundary features...')
+
+        if 'Daily_Commute_km' in df.columns:
+            df['commute_is_5km'] = (df['Daily_Commute_km'] == 5.0).astype(np.int8)
+            df['commute_ge_83km'] = (df['Daily_Commute_km'] >= 83.0).astype(np.int8)
+            df['commute_zone'] = pd.cut(
+                df['Daily_Commute_km'].fillna(df['Daily_Commute_km'].median()),
+                bins=[-np.inf, 15, 50, 83, np.inf],
+                labels=[0, 1, 2, 3]
+            ).astype(np.int8)
+
+        if 'Annual_Income_USD' in df.columns:
+            df['income_is_30k'] = (df['Annual_Income_USD'] == 30000.0).astype(np.int8)
+            df['income_round_5k'] = ((df['Annual_Income_USD'] % 5000.0) == 0).astype(np.int8)
+
+        return df
+
+    def _add_subsidy_interactions(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self.verbose:
+            print('  -> Adding subsidy interaction features...')
+
+        subsidy_num = df['Subsidy_Available'].astype(str).map({'Yes': 1, 'No': 0}).fillna(0)
+
+        if 'Environmental_Concern_Level' in df.columns:
+            df['subsidy_x_env_concern'] = subsidy_num * df['Environmental_Concern_Level']
+            df['high_env_concern_and_subsidy'] = (
+                (subsidy_num == 1) & (df['Environmental_Concern_Level'] >= 4)
+            ).astype(np.int8)
+
+        if 'Range_Anxiety_Level' in df.columns:
+            anxiety_str = df['Range_Anxiety_Level'].astype(str)
+            df['subsidy_yes_and_high_anxiety'] = (
+                (subsidy_num == 1) & (anxiety_str == 'High')
+            ).astype(np.int8)
+            df['subsidy_yes_and_low_anxiety'] = (
+                (subsidy_num == 1) & (anxiety_str == 'Low')
+            ).astype(np.int8)
+
+        if 'charging_accessibility_score' in df.columns:
+            df['subsidy_x_charging_score'] = subsidy_num * df['charging_accessibility_score']
+
+        return df
+
 

@@ -1,7 +1,7 @@
 {
-  "learning_rate": 0.04104638879162461,
-  "max_leaf_nodes": 37,
-  "min_samples_leaf": 75,
-  "l2_regularization": 13.138087446295886,
-  "max_bins": 212
+  "learning_rate": 0.04648441831639963,
+  "max_leaf_nodes": 48,
+  "min_samples_leaf": 21,
+  "l2_regularization": 6.82600570146846,
+  "max_bins": 200
 }
