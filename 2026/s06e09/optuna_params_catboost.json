@@ -1,0 +1,8 @@
+{
+  "learning_rate": 0.07227520178583643,
+  "depth": 5,
+  "l2_leaf_reg": 2.138159498681845,
+  "random_strength": 0.18572480534716015,
+  "bagging_temperature": 0.14727006691017014,
+  "border_count": 223
+}
